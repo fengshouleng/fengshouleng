@@ -1,4 +1,4 @@
-# tests/security/ — 权限负例与安全基线（TASK-QA-002）
+﻿# tests/security/ — 权限负例与安全基线（TASK-QA-002）
 
 - **负责人**：R5 QA（preset `qa-verify`），**只报不修**
 - **任务卡**：`contracts/tasks/TASK-QA-002.yaml`（T3.3 安全负例）
@@ -6,9 +6,11 @@
 - **权限基线**：`docs/12-permission-matrix.md` **v1.3**（§1 权限矩阵、§2 判定链与 §2.0 可见域、§3 CSRF/会话）
 - **同步依据**：`docs/13-contract-changes.md` **§8.1.2**（v1.0.3 必须同步的 3 处断言）+ CHG-033/CHG-036
 - **技术选型**：pytest + httpx（同步），**黑盒**打运行中的 API；不 import `server/` 代码
-- **当前状态**：本机 shell 不可用（`0xC0000142`），**本目录用例未在本地执行**，`tests.verified=false`；
-  预期结果为“全部 pass，仅 1 条已知缺口 xfail”（见 §7）；另有 2 条**环境前置**导致的 skip
-  （healthz 503 分支需 `EXAM_HEALTHZ_503=1`、系统审计记录需先 `create-admin`），见 §6.12/§6.13
+- **当前状态（2026-11-11 更新）**：本机已真实执行 —— **134 收集 / 133 passed / 1 skipped / 0 failed / 0 xfail**
+  （本机 PG 16.4 + `seed-demo` + `create-admin`，证据 `reports/security/run-20261111/`）。
+  唯一 skip 是 healthz 503 分支（需 `EXAM_HEALTHZ_503=1` 且停 DB，见 §6.12）。
+  **越权尝试写审计已实现**（docs/12 §4 由「可选」改为必做），原 xfail 用例转硬断言并改名
+  `test_denied_attempt_is_audited`。
 
 ## 1. 文件
 
@@ -199,7 +201,7 @@ EXAM_API_URL=http://127.0.0.1:8000/api python -m pytest tests/security/test_idor
 | 审计含 actor/action/target/ip/时间（AC-22） | `test_permission_matrix.py::test_audit_records_write_operations`；`test_contract_v103.py::test_audit_user_record_has_integer_actor_and_real_ip` |
 | **系统记录 `actor_id=null`、`ip=="-"`；用户记录 `actor_id` 整数、`ip` 非空（CHG-035）** | `test_contract_v103.py::test_audit_system_record_has_null_actor_and_dash_ip`（无系统记录时 skip）、`test_audit_user_record_has_integer_actor_and_real_ip` |
 | **`GET /healthz` 200 且 `db=="ok"`（CHG-034）** | `test_permission_matrix.py::test_healthz_is_public`；`test_contract_v103.py::test_healthz_returns_db_ok` |
-| 越权尝试是否落审计 | `test_permission_matrix.py::test_denied_attempt_is_audited_known_gap`（**xfail**，见 §6/§7） |
+| 越权尝试是否落审计（**已实现**） | `test_permission_matrix.py::test_denied_attempt_is_audited`（硬断言，2026-11-11 起 `action=permission.denied`） |
 
 ## 5. 断言口径
 
@@ -225,9 +227,11 @@ EXAM_API_URL=http://127.0.0.1:8000/api python -m pytest tests/security/test_idor
 1. **8h TTL 真实到期无法黑盒等待**：没有 API 能伪造 `expires_at`，本套件用
    “伪造/失效 Cookie → 401”覆盖同一客户端口径；真实 TTL 需要 DB/时钟注入或 CI fake time，
    当前未做。`test_tampered_or_expired_session_cookie_is_401` 的 docstring 已注明。
-2. **越权尝试未落审计**：`docs/12 §4` 把“被拒绝的越权尝试”标为可选；当前实现只在正常写操作
-   写审计，未记录 403 尝试。对应用例 `test_denied_attempt_is_audited_known_gap` 标 **xfail**，
-   并列入 `open_questions`。若后续实现记录，该用例会 XPASS（不阻断）。
+2. ~~**越权尝试未落审计**~~（**2026-11-11 已解决**）：`docs/12 §4` 已将「被拒绝的 RBAC/归属 403」
+   改为必做，实现见 `server/app/main.py::_record_permission_denied`（`action=permission.denied`，
+   target 为 `METHOD /path`，detail 含 reason/request_id；401 与 CSRF 失败不记）。
+   黑盒用例 `test_denied_attempt_is_audited` 已从 xfail 转为硬断言；白盒覆盖见
+   `server/tests/audit/test_permission_denied_audit.py` 与 `server/tests/sessions/test_idor_denied_audit.py`。
 3. **argon2id 哈希不可从 API 观察**：黑盒只能断言“响应/审计无 password/password_hash”与
    “弱密码 422”；数据库内哈希算法由 `server/tests` 和代码评审保证（AC-02/NFR 安全）。
 4. **弱密码只覆盖契约的 `minLength=8`**：契约 `UserCreate.password` 只有长度约束，没有复杂度
@@ -267,13 +271,12 @@ EXAM_API_URL=http://127.0.0.1:8000/api python -m pytest tests/security/test_idor
 ## 7. 预期结果与证据
 
 - 在 §2 完整 seed（seed-demo + create-admin）且 API 健康时，预期：
-  **全部用例 pass，除 `test_denied_attempt_is_audited_known_gap` 为 xfail（预期缺口，见 §6.2）**；
-  另有两处**条件 skip**：`test_healthz_503_is_unified_error_without_db`（需 `EXAM_HEALTHZ_503=1`，
-  见 §6.12）与 `test_audit_system_record_has_null_actor_and_dash_ip`（库里无系统记录时，见 §6.13）。
-- **v1.0.3 同步后本目录不再有针对 healthz / `actor_id` / draft 口径的 xfail**：这 3 处已由
-  CHG-034/035/036 落地并转为硬断言（`docs/13` §8.1.2）；剩余 xfail 仍只有 §6.2 的越权审计缺口
-  （与 v1.0.3 无关，属 docs/12 §4 的“可选”项）。
-- 本机未执行（shell 不可用）；`tests.verified=false`，CI 执行后把
+  **134 收集 / 133 passed / 1 skipped / 0 failed / 0 xfail**（2026-11-11 实测）；
+  唯一 skip 是 `test_healthz_503_is_unified_error_without_db`（需 `EXAM_HEALTHZ_503=1`，见 §6.12）。
+  `test_audit_system_record_has_null_actor_and_dash_ip` 在 `create-admin` 之后有系统记录，已实测通过。
+- **本目录已无 xfail**：healthz / `actor_id` / draft 三处由 CHG-034/035/036 转硬断言（`docs/13` §8.1.2）；
+  §6.2 的越权审计缺口已于 2026-11-11 实现并转硬断言（`docs/12` §4）。
+- 本机已执行（2026-11-11，`reports/security/run-20261111/`）；CI 执行后把
   `reports/security/security.xml` 与失败摘要回填 `docs/61-gate-report.md` 的 G4 安全一节。
   > 本次任务写作用域为 `tests/security/**`、`reports/security/**`，`docs/61-gate-report.md`
   > 由 QA Lead/门控任务更新（本任务不改 `docs/`）。

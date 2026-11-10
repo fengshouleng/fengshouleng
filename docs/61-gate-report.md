@@ -193,8 +193,8 @@ docker compose version     #
 | 项 | 结果 | 证据 |
 |---|---|---|
 | 后端单测 | ✅ **164 passed / 0 failed** | `reports/backend-junit.xml` |
-| 安全负例 | ✅ **134 tests / 0 failed / 1 skipped / 1 xfailed**（跳过项为 `EXAM_HEALTHZ_503=1` 条件用例） | `reports/security-junit.xml`、`reports/g4-20261110/security3.log` |
-| E2E | ✅ **5 passed / 5 skipped / 1 xfailed**：5 条 UI 主链路全绿；5 条为旧 API 骨架（`EXAM_E2E_API` 未开启，设计内跳过）；04c 真实到期为条件 xfail（2026-11-10 复跑 24.03s，证据 `reports/e2e/20261110-091432/`） | `reports/e2e-junit.xml`、`reports/e2e/20261110-091432/` |
+| 安全负例 | ✅ **134 收集 / 133 passed / 0 failed / 1 skipped / 0 xfail**（跳过项为 `EXAM_HEALTHZ_503=1` 条件用例）；**越权尝试写审计已实现**（`action=permission.denied`），原唯一 xfail 转硬断言 | `reports/security/run-20261111/`、`reports/security-junit.xml` |
+| E2E | ✅ **UI 5 条主链路全绿**（2026-11-10，`reports/e2e/20261110-091432/`）；**旧 API 骨架已修复（DEF-009）并实测 5 passed**（2026-11-11，`reports/e2e/20261111-015008/`）；04c 真实到期为条件 xfail | `reports/e2e-junit.xml`、`reports/e2e/20261111-015008/` |
 | PostgreSQL 迁移 | ✅ 0001→0006 全部成功（PG 16.4，含 GIN 索引） | 本次容器执行日志 |
 | 备份 | ✅ dump 33900 bytes、TOC 90、sha256 校验通过 | `reports/drill-backups/exam_20261109T175350Z.dump` |
 | 恢复演练 | ✅ **PASS**：restore 0s（<1800s）；行数 users 4/4、questions 3/3、papers 1/1、exams 0/0、exam_sessions 0/0；临时库已删 | `reports/drill-backups/drill-logs/backup-20261109.log` |

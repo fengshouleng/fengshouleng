@@ -1,4 +1,4 @@
-# 仓库根 .gitignore（首次推送前需要；各子目录另有局部 .gitignore）
+﻿# 仓库根 .gitignore（首次推送前需要；各子目录另有局部 .gitignore）
 # 目标：只提交源码、契约、文档、配置模板与锁文件；不提交运行时产物与密钥。
 
 # Python
@@ -46,3 +46,6 @@ Thumbs.db
 *.egg-info/
 pytest-of-*/
 tests/perf/data/
+# pip 在仓库根被中断的安装残留
+pip-metadata-*/
+pip-unpack-*/

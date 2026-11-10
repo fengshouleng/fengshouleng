@@ -19,6 +19,8 @@
 | RISK-13 | 本机 Docker Desktop / WSL 曾损坏（`REGDB_E_CLASSNOTREG`、引擎无法启动），阻塞 staging 演练与容器内性能复测 | 低（已修复） | 中 | **2026-11-10 12:30 已修复**：`wsl -l -v` 可见 `docker-desktop` distro，Docker engine 29.9.3 可用，`docker compose config` exit 0；容器内性能复测随后执行 | `docker info` 失败 / `wsl --shutdown` 报注册表错误 | R6/R0 |
 | RISK-14 | 性能尾延迟受存储/OS 影响：本机 NTFS 上 100 并发开考的 WAL `fsync` 串行，`answer_save` p95 300–590ms；Linux/SSD 未实测 | 中 | 高 | 原生复测已完成（`docs/61 §10.2`、`docs/75`）；部署配置已加 `WEB_CONCURRENCY` + 池摊分；**最终销项需在 fsync=on 的 Linux/SSD 上复跑 k6** | Linux 复测 save p95 ≥300ms | R0/R6 |
 | RISK-15 | `app/middleware/access_log.py` 用模块级锁 + 每行 `flush()` 写 stdout：日志消费者慢（PowerShell 管道、前台 `compose up`、慢 journald）时会把全部请求串行化，实测 p95 700ms→20–31s 并诱发 `QueuePool` 500 | 中 | 高 | 压测/生产用 detached + json-file 限额，不把容器日志接到慢消费者；长期改为队列异步写（RISK 记录，不改本批代码） | 日志管道下 P95 突增到秒级、`QueuePool timeout` 500 | R0 |
+| RISK-16 | 前端依赖存在 **dev-only** 已知漏洞（vite 5.x / vitest 2.x / tinypool / esbuild / minimatch；`pnpm audit` 18 条：3 critical + 1 high + 13 moderate + 1 low） | 低（不进生产镜像；仅本地 dev server 与 CI 构建暴露） | 中 | 生产镜像只含 nginx + 静态产物（`Dockerfile.web` 多阶段构建，node 阶段不落地）；**升级为一独立 PR**：vite 5→7、vitest 2→4、esbuild/minimatch 随依赖树升级，合并前必须过 `pnpm lint/tsc/test/build`（91 用例） | 有人把 dev server 暴露到公网 / 升级后 build 失败 | R6 |
+| RISK-17 | `react-router-dom` 6.x 有 2 条 moderate 公告（`<Link>`/`useNavigate` 反斜杠开放重定向、SSR `deserializeErrors` 构造注入）；修复需升 7.x（破坏性） | 低（**已在代码层缓解**） | 中 | 本项目是纯 CSR（无 SSR），且所有跳转目标经 `web/src/pages/login/safeReturnTo.ts` 清洗：拒绝 `//host`、反斜杠、控制字符、指回 `/login`；`pnpm audit --prod` 仅剩这 2 条。升级 7.x 与 RISK-16 同批做 | 新增未清洗的 `navigate(userInput)` / 引入 SSR | R6 |
 
 ## 升级规则
 

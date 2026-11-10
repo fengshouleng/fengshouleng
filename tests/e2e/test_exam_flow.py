@@ -42,6 +42,14 @@ factories = pytest.importorskip("factories", reason="tests/factories.py 不可�
 BASE_URL = os.environ.get("EXAM_BASE_URL", "http://127.0.0.1:8000/api").rstrip("/")
 OFFLINE_SECONDS = int(os.environ.get("EXAM_OFFLINE_SECONDS", "30"))  # 断网时长（仅记录用途）
 
+# 账号必须来自**已存在的 seed 数据**（seed-demo / create-admin），不能用 factory 随机生成：
+# `build_exam_scenario()` 只生成请求体，不会去 API 建账号。2026-11-11 之前这里直接用
+# `scenario.teacher`（随机用户名）→ 永远 401，导致 5 条骨架用例永远只能 skip。
+TEACHER_USERNAME = os.environ.get("EXAM_TEACHER_USERNAME", "demo-teacher")
+STUDENT_USERNAME = os.environ.get("EXAM_STUDENT_USERNAME", "demo-student-1")
+TEACHER_PASSWORD = os.environ.get("EXAM_TEACHER_PASSWORD") or factories.DEFAULT_PASSWORD
+STUDENT_PASSWORD = os.environ.get("EXAM_STUDENT_PASSWORD") or factories.DEFAULT_PASSWORD
+
 pytestmark = [
     pytest.mark.skipif(
         os.environ.get("EXAM_E2E") != "1",
@@ -125,7 +133,21 @@ def expect(resp: Any, status: int, hint: str = "") -> Any:
 
 @pytest.fixture(scope="module")
 def scenario() -> Any:
-    return factories.build_exam_scenario(seed=42)
+    built = factories.build_exam_scenario(seed=42)
+    # 用环境里真实存在的账号覆盖随机账号（见模块头部说明）
+    built.teacher = factories.Account(
+        username=TEACHER_USERNAME,
+        display_name="QA教师",
+        role="teacher",
+        password=TEACHER_PASSWORD,
+    )
+    built.student = factories.Account(
+        username=STUDENT_USERNAME,
+        display_name="QA学生",
+        role="student",
+        password=STUDENT_PASSWORD,
+    )
+    return built
 
 
 @pytest.fixture(scope="module")

@@ -1,4 +1,4 @@
-"""审计写入、查询与脱敏的统一入口（TASK-BE-006）。
+﻿"""审计写入、查询与脱敏的统一入口（TASK-BE-006）。
 
 约定：
 - 与业务写操作在**同一事务**提交（docs/11-data-model.md §4.7），
@@ -29,6 +29,8 @@ AUTH_LOGIN_FAILED = "auth.login_failed"
 AUTH_LOGOUT = "auth.logout"
 USER_CREATE = "user.create"
 USER_UPDATE = "user.update"
+#: 越权尝试（RBAC/归属 403）留痕，字段见 docs/12 §4；2026-11-11 起必做
+PERMISSION_DENIED = "permission.denied"
 
 #: 审计保留天数（docs/11-data-model.md#audit_logs）
 DEFAULT_RETENTION_DAYS = 180
@@ -176,6 +178,7 @@ __all__ = [
     "AUTH_LOGIN_FAILED",
     "AUTH_LOGOUT",
     "DEFAULT_RETENTION_DAYS",
+    "PERMISSION_DENIED",
     "USER_CREATE",
     "USER_UPDATE",
     "list_audit_logs",

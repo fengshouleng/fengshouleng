@@ -29,6 +29,11 @@
 默认整模块 **skip**；仅 `EXAM_E2E=1` 时执行。旧版 API 级骨架
 `tests/e2e/test_exam_flow.py` 仅在 `EXAM_E2E_API=1` 时执行（保留 `TC-E2E-*` 用例实体）。
 
+> **2026-11-11 修复（DEF-009）**：API 骨架原先用 `build_exam_scenario()` 生成的**随机账号**登录，
+> 而那些账号从未被创建过 → 永远 401，5 条用例只能长期 skip。现改为使用 seed 里**真实存在**的账号
+> （`EXAM_TEACHER_USERNAME` / `EXAM_STUDENT_USERNAME` / 对应 `*_PASSWORD`），本机实测 **5 passed**。
+> 证据：`reports/e2e/20261111-015008/`。
+
 ## 2. 前置依赖
 
 ```bash
@@ -129,8 +134,13 @@ EXAM_E2E=1 EXAM_E2E_HEADED=1 EXAM_E2E_SLOWMO_MS=200 python -m pytest tests/e2e -
 # 真实等待到期（约 10 分钟，默认 xfail）
 EXAM_E2E=1 EXAM_E2E_WAIT_EXPIRY=1 python -m pytest tests/e2e -q -k t_e2e_04c
 
-# 旧版 API 级骨架（非 Playwright）
-EXAM_E2E=1 EXAM_E2E_API=1 python -m pytest tests/e2e/test_exam_flow.py -q
+# 旧版 API 级骨架（非 Playwright）—— 用 seed 里真实存在的账号
+EXAM_E2E=1 EXAM_E2E_API=1 \
+EXAM_BASE_URL=http://127.0.0.1:8000/api \
+EXAM_TEACHER_USERNAME=demo-teacher EXAM_TEACHER_PASSWORD=dev-口令 \
+EXAM_STUDENT_USERNAME=demo-student-1 EXAM_STUDENT_PASSWORD=dev-口令 \
+  python -m pytest tests/e2e/test_exam_flow.py -q
+# 期望：5 passed（2026-11-11 本机实测 5 passed in 0.45s）
 ```
 
 ### 环境变量

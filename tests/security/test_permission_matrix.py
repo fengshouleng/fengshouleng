@@ -431,12 +431,12 @@ def test_audit_records_write_operations(admin, teacher) -> None:
     assert item.get("created_at"), "AC-22：审计 created_at 必填"
 
 
-@pytest.mark.xfail(
-    reason="docs/12 §4 把“越权尝试写审计”列为可选；当前实现未记录，已记入 open_questions",
-    strict=False,
-)
-def test_denied_attempt_is_audited_known_gap(admin, student_a) -> None:
-    """若实现开始记录越权尝试则 XPASS；当前预期 xfail（不阻断 G4）。"""
+def test_denied_attempt_is_audited(admin, student_a) -> None:
+    """越权尝试必须留痕（2026-11-11 起由「可选」改为必做，见 docs/12 §4）。
+
+    实现：`app/main.py::_record_permission_denied` 在 RBAC/归属类 403 时写
+    `action=permission.denied`，target 为 `METHOD /path`，detail 含 reason/request_id。
+    """
     before = utc_now() - timedelta(seconds=2)
     response = student_a.post(
         "/questions",
@@ -460,12 +460,16 @@ def test_denied_attempt_is_audited_known_gap(admin, student_a) -> None:
     denied = [
         item
         for item in logs["items"]
-        if item.get("target_type") == "question"
-        or "question" in str(item.get("action", ""))
+        if item.get("action") == "permission.denied"
         or "denied" in str(item.get("action", ""))
         or "forbidden" in str(item.get("action", ""))
     ]
     assert denied, (
-        "学生越权 POST /questions 后未在 audit_logs 中找到记录；"
-        "docs/12 §4 将“越权尝试”标为可选，已记入 open_questions"
+        "学生越权 POST /questions 后未在 audit_logs 中找到 permission.denied 记录；"
+        "检查 app/main.py::_record_permission_denied 与 docs/12 §4"
     )
+    item = denied[0]
+    assert item["actor_id"] == student_a.user["id"]
+    assert item["target_id"] == "POST /api/questions"
+    assert item.get("ip"), "AC-22：越权审计的 ip 必填"
+    assert item.get("created_at"), "AC-22：越权审计的 created_at 必填"

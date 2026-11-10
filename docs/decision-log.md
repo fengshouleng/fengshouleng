@@ -182,3 +182,19 @@
   - **决定性发现**：跳过开头 40s（warm-up 窗口）后，服务端 **save p95 = 264.6ms ✅、read p95 = 18.8ms ✅** → **稳态已达标**；唯一剩下的红是「第一波保存 p50 470ms + 同秒 100 个开考建会话 p95 796ms」被混进同一个 `save_p95`。
   - **产出**：`docs/76-perf-gate-scope-proposal.md` 草案（R1/R2/R3 三档口径 + 真实数值；**未改任何阈值/任务卡**，待 R0+QA 评审）；`docs/61 §10.4.5` 记录复跑对比。
   - **G4**：仍 CONDITIONAL。收敛只剩两条路：① ≥8 vCPU runner 复跑（按核数近似线性，第一波 470→预计 230ms 左右）；② R0/QA 批准拆分「开场/首波 burst」与「稳态读写」。**不自行调阈值。**
+- 2026-11-11（02:00–02:30，安全已知缺口清零：越权尝试写审计）：
+  - **决策**：`docs/12 §4` 把「被拒绝的越权尝试写审计」由**可选改为必做**；只记 **RBAC / 归属类 403**（`code=FORBIDDEN`），**401 未登录与 CSRF 失败不记**（语义不同）。
+  - **实现**：`app/main.py::_record_permission_denied` 在 `AppError` 处理器统一处理 → 写 `action=permission.denied`、`target_type=endpoint`、`target_id="METHOD /path"`、真实 actor/ip/ua，`detail={reason,request_id,method,path}`；审计失败只降级，不改变 403。
+    - 过程中修掉一个**真实缺陷**：依赖 teardown 后 ORM `User` 已 detach/expire，异常处理器与访问日志读 `state.user.id` 会 `DetachedInstanceError`（403/409 响应在 access log 里会整行丢失）。改为在 `get_auth_context` 里存纯 int 的 `state.actor_id` 快照。
+  - **黑盒 xfail 清零**：`tests/security/test_permission_matrix.py::test_denied_attempt_is_audited` 由 xfail 转硬断言。
+  - **验证**（本机 PG 16.4 + seed-demo + create-admin，全新库 `exam_security`）：security **134 收集 / 133 passed / 0 failed / 1 skipped（healthz 503 条件用例）/ 0 xfail**，证据 `reports/security/run-20261111/`；新增白盒用例 `server/tests/audit/test_permission_denied_audit.py`、`server/tests/sessions/test_idor_denied_audit.py`；后端 **177 passed**、ruff/mypy 绿。
+  - **G4**：安全项从「1 个已知缺口」变为**全部转硬断言**；剩余阻断仍只有性能（等 ≥8 vCPU）。
+- 2026-11-11（02:30–03:00，B/C 两项：CI 门禁加固材料 + E2E API 骨架修复）：
+  - **B（CI 门禁 P-005）**：新增 `docs/77-ci-branch-protection.md` 与可执行脚本 `scripts/branch_protection.ps1`（GET 现状 → 可选 PUT 开启 required checks `CI 汇总门`，结果写 `reports/ci/branch-protection-<UTC>.json`）。**实际开关被权限阻塞**：本会话 PAT 缺 `Administration: write`，`GET/PUT /branches/main/protection` 均 403（已留证据）；需仓库管理员按 `docs/77 §3.1` 网页勾选或换 admin token 执行。
+  - **C（E2E API 骨架，DEF-009）**：`tests/e2e/test_exam_flow.py` 原先用 `build_exam_scenario()` 生成的**随机账号**登录，而那些账号从未创建 → 恒 401，5 条用例长期 skip。改为使用 seed 里真实账号（`EXAM_TEACHER_USERNAME`/`EXAM_STUDENT_USERNAME` + 口令），本机实测 **5 passed**（`reports/e2e/20261111-015008/`），并更新 `tests/e2e/README.md` 用法与期望。
+- 2026-11-11（03:00–03:30，D/E 两项：G5 预检 + 依赖漏洞台账）：
+  - **D（G5 预检）**：新增 `docs/78-g5-precheck.md` 与 `scripts/g5_precheck.ps1`（把不依赖生产就能判的项自动化）。实测 **PASS=3 / FAIL=2 / SKIP=2**：FAIL 1.1=G4 仍 CONDITIONAL（性能待销项）、FAIL P-005=分支保护未开（token 缺 Administration）；SKIP=4.2 证书 / 4.5 生产 env（需真实域名与生产环境）；PASS=演练 JSON（rollback 11s/total 31s）、compose config、发布/备份/监控脚本齐全。文档给出剩余人工项逐条的「怎么关 + 责任角色」与最小上线序列。
+  - **E（依赖漏洞扫描）**：新增 `docs/79-dependency-audit.md`。
+    - 后端 `pip-audit`（91 包）：仅 `pip 25.0.1`（7 条，工具链）与 `pytest 8.4.2`（1 条，测试依赖）有告警；**运行时依赖（fastapi/uvicorn/pydantic/sqlalchemy/psycopg/alembic 等）零告警**。
+    - 前端 `pnpm audit`：全量 18 条（3 critical + 1 high + 13 moderate + 1 low），全部集中在 devDependencies（vite/vitest/tinypool/esbuild/minimatch）；`pnpm audit --prod` 只剩 2 条 moderate（react-router-dom 6.x），已由 `safeReturnTo.ts` + 纯 CSR 架构缓解（无 SSR、所有 returnTo 清洗）。
+    - 登记 `RISK-16`（前端 dev-only 依赖）与 `RISK-17`（react-router，已在代码层缓解），并给出升级计划（vite 5→7 / vitest 2→4 / react-router 6→7 同批 PR，门禁为 lint+tsc+91 测试+build）。

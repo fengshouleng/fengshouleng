@@ -1,4 +1,4 @@
-# 11 · 数据模型 v1.0
+﻿# 11 · 数据模型 v1.0
 
 - 存储：PostgreSQL 16（生产）/ SQLite（本地与测试，注意 SQLite 无行锁语义，交卷幂等用唯一约束 + 事务模拟）
 - 迁移：Alembic，`server/migrations/`
@@ -139,7 +139,7 @@ PK：`(paper_id, question_id)`；约束：同一试卷 `order_no` 唯一。
 |---|---|---|
 | id | bigserial PK | |
 | actor_id | bigint FK users | null（系统操作） |
-| action | varchar(64) | 如 `question.create`、`session.submit` |
+| action | varchar(64) | 如 `question.create`、`session.submit`、`permission.denied`（越权尝试，docs/12 §4） |
 | target_type / target_id | varchar(32) / varchar(64) | |
 | ip | varchar(45) | 系统操作记 `"-"`（契约 v1.0.3 CHG-035；inet 类型无法存 `-`） |
 | user_agent | varchar(255) | |

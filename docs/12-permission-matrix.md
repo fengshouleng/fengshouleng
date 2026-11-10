@@ -107,7 +107,11 @@
 
 ## 4. 审计要求
 
-- 全部写操作（含被拒绝的越权尝试，可选）写 `audit_logs`：`action`、`target_type`、`target_id`、`ip` 为**必填**（AC-22，C-05），`actor_id` 字段也必填（**总是出现**）但**值可为 `null`**：用户触发的写操作 → 真实 `users.id`；**系统操作 / CLI 记录**（备份清理、初始化、定时任务、无请求上下文的动作）→ `actor_id=null`（v1.0.3 / CHG-035，BE-006 传 `actor_id=None`），**不得伪造成某个用户 id**。
+- 全部写操作（含被拒绝的越权尝试）写 `audit_logs`：`action`、`target_type`、`target_id`、`ip` 为**必填**（AC-22，C-05），`actor_id` 字段也必填（**总是出现**）但**值可为 `null`**：用户触发的写操作 → 真实 `users.id`；**系统操作 / CLI 记录**（备份清理、初始化、定时任务、无请求上下文的动作）→ `actor_id=null`（v1.0.3 / CHG-035，BE-006 传 `actor_id=None`），**不得伪造成某个用户 id**。
+- **越权尝试（2026-11-11 起由「可选」改为必做）**：所有 **RBAC / 归属类 403**（`code=FORBIDDEN`）写一条 `action=permission.denied` 的审计，`actor_id`=当前登录用户，`target_type=endpoint`，`target_id="METHOD /path"`，`ip` 为真实来源，`detail` 只含 `reason`/`request_id`/`method`/`path`（经统一脱敏）。
+  - **401 未登录不记**（不是越权尝试）；**CSRF 失败不记**（`CSRF_INVALID` 属请求伪造防护，语义不同）。
+  - 实现位置：`server/app/main.py::_record_permission_denied`（在 `AppError` 异常处理器里统一处理，避免每个路由各写一遍）；审计写入失败只降级，不改变 403 响应。
+  - 覆盖用例：`server/tests/audit/test_permission_denied_audit.py`（角色越权/401 不记/CSRF 不记）、`server/tests/sessions/test_idor_denied_audit.py`（归属越权）、黑盒 `tests/security/test_permission_matrix.py::test_denied_attempt_is_audited`。
 - **系统操作的 `ip` 固定记 `"-"`**（不是 null、不是空串；v1.0.3 / CHG-035）；用户操作的 `ip` 必须是真实来源地址字符串。`user_agent`/`detail` 可选，`detail` 必须脱敏（禁止明文密码/答案）。
 - 仅 admin 可查询；默认返回最近 180 天（`from`/`to` 闭区间）；记录只增不改不删。`GET /audit-logs` 的 `actor_id` 查询参数只按用户过滤，系统记录（null）不匹配任何整数过滤值。
 

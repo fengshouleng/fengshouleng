@@ -95,6 +95,44 @@ def _format_validation_error(exc: RequestValidationError) -> str:
     return "; ".join(parts) or "请求参数校验失败"
 
 
+def _record_permission_denied(request: Request, exc: AppError) -> None:
+    """把 RBAC / 归属类 403 写进审计（docs/12 §4；2026-11-11 由「可选」改为必做）。
+
+    只记 `FORBIDDEN`（角色不允许、非本人资源）；401/CSRF 失败等 403 不动，避免语义混淆。
+    使用本请求的数据库会话（`get_auth_context` 挂在 `request.state` 上的那个），
+    因此测试的依赖覆盖同样生效；审计写失败绝不影响 403 响应本身。
+    """
+    from app.audit import service as audit
+    from app.auth.dependencies import REQUEST_DB_ATTR
+
+    db = getattr(request.state, REQUEST_DB_ATTR, None)
+    if db is None:
+        return
+    try:
+        # actor_id 用 get_auth_context 存的纯 int 快照：此时依赖已 teardown，
+        # 直接读 request.state.user 的 ORM 属性会 DetachedInstanceError
+        actor_id = getattr(request.state, "actor_id", None)
+        audit.record(
+            db,
+            action=audit.PERMISSION_DENIED,
+            actor_id=actor_id if isinstance(actor_id, int) else None,
+            target_type="endpoint",
+            target_id=f"{request.method.upper()} {request.url.path}",
+            ip=audit.request_ip(request),
+            user_agent=audit.request_user_agent(request),
+            detail={
+                "reason": exc.message,
+                "request_id": _request_id(request),
+                "method": request.method.upper(),
+                "path": request.url.path,
+            },
+        )
+        db.commit()
+    except Exception:  # pragma: no cover - 审计失败不得改变 403 结果
+        with contextlib.suppress(Exception):
+            db.rollback()
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """应用工厂；测试可传入自定义 Settings（临时 SQLite 等）。"""
     resolved = settings or get_settings()
@@ -126,6 +164,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.exception_handler(AppError)
     def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
+        # 越权尝试留痕（AC-22 / docs/12 §4）：只记角色/归属类 403
+        if exc.http_status == 403 and exc.code == errors.FORBIDDEN:
+            _record_permission_denied(request, exc)
         return error_response(request, exc.http_status, exc.code, exc.message)
 
     @application.exception_handler(RequestValidationError)

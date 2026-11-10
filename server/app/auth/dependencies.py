@@ -23,6 +23,10 @@ from app.models.user import User
 
 _AUTH_CONTEXT_ATTR = "auth_context"
 
+#: 把「本请求的数据库会话」挂到 `request.state` 上，供 403 越权审计（app/main.py）复用。
+#: 这样审计写入走的是同一个（可能被测试/依赖覆盖的）会话，而不是另开连接。
+REQUEST_DB_ATTR = "request_db"
+
 
 @dataclass(frozen=True, slots=True)
 class AuthContext:
@@ -34,6 +38,9 @@ class AuthContext:
 
 def get_auth_context(request: Request, db: Session = Depends(get_db)) -> AuthContext | None:
     """从 Cookie 解析会话并校验过期/吊销/停用；未登录返回 None（不抛错）。"""
+    state: Any = request.state
+    # 403 越权审计需要同一个请求会话（见 app/main.py::_record_permission_denied）
+    setattr(state, REQUEST_DB_ATTR, db)
     cached = getattr(request.state, _AUTH_CONTEXT_ATTR, None)
     if isinstance(cached, AuthContext):
         return cached
@@ -45,10 +52,12 @@ def get_auth_context(request: Request, db: Session = Depends(get_db)) -> AuthCon
         return None
     session, user = resolved
     context = AuthContext(user=user, session=session)
-    state: Any = request.state
     state.auth_context = context
     state.user = user
     state.auth_session = session
+    # 纯 int 的 actor_id：依赖 teardown 后 ORM 对象已 detach/expire，
+    # 异常处理器与访问日志只能用这个快照（否则 403/409 请求会取不到 actor 甚至丢日志行）
+    state.actor_id = user.id
     return context
 
 

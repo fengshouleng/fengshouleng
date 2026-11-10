@@ -15,7 +15,7 @@
 | G1 范围冻结 | ✅ 放行（采用默认假设 A1–A4） | 见 `docs/01-scope-freeze.md`；变更走 ADR |
 | G2 契约冻结 | ✅ v1.0.3（机器门通过） | 22+9+4 条缺陷/一致性问题全处置；`openapi-spec-validator` → OK；contract 55 passed / 0 xfail |
 | 卡进度 | ✅ 完成 | 26 张任务卡 + 6 轮契约/测试同步全部完成 |
-| 自动化验证 | ✅ G3 通过；🟡 G4 条件通过 | contract 55 / backend **172** / frontend **91** 全绿；security **134** / E2E **5 UI 链路** / 备份恢复 **PASS** / **监控告警链路自测 27/27** / compose config OK / **staging 部署→回滚 PASS（17s/11s）** / **CI 三 job 首跑全绿**（run `42848561341`）。**性能（四轮优化）：4 vCPU 上 read p95 301→**19.8ms** ✅、save p95 10.2s→**538ms**、start p95 1409→**796ms**、失败率 0；**启动预热 + 冻结快照缓存后，跳过 warm-up 窗口的服务端 save p95 = 264.6ms ✅（稳态已达标）**，仍红的只是「开场/首波 100 并发 burst」（第一波 p50 470ms）→ 需 ≥8 vCPU，或 R0/QA 按 `docs/76` 草案拆分「burst 与稳态」口径（未改阈值）** |
+| 自动化验证 | ✅ G3 通过；🟡 G4 条件通过 | contract 55 / backend **177** / frontend **91** 全绿；security **133 passed / 0 xfail** / E2E **5 UI 链路** / 备份恢复 **PASS** / **监控告警链路自测 27/27** / compose config OK / **staging 部署→回滚 PASS（17s/11s）** / **CI 三 job 首跑全绿**（run `42848561341`）。**性能（四轮优化）：4 vCPU 上 read p95 301→**19.8ms** ✅、save p95 10.2s→**538ms**、start p95 1409→**796ms**、失败率 0；**启动预热 + 冻结快照缓存后，跳过 warm-up 窗口的服务端 save p95 = 264.6ms ✅（稳态已达标）**，仍红的只是「开场/首波 100 并发 burst」（第一波 p50 470ms）→ 需 ≥8 vCPU，或 R0/QA 按 `docs/76` 草案拆分「burst 与稳态」口径（未改阈值）** |
 | 代码入库 | ✅ 已初始化 | Git 2.56；`.gitattributes` 统一换行（sh/py/yml=LF，ps1/cmd=CRLF）；初始提交 `d28d652`，工作区干净 |
 
 ## 目录结构

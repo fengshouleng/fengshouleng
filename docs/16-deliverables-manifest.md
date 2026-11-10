@@ -1,4 +1,4 @@
-﻿# 16 · 交付物清单与验证状态（Handoff Manifest）
+# 16 · 交付物清单与验证状态（Handoff Manifest）
 
 > 用途：交接时一眼看清「有什么、在哪、验证到哪一步」。
 > 核心口径：**「静态审查通过」≠「已验证」**。本清单把两者严格分开，不做美化。
@@ -17,9 +17,15 @@
 | [docs/02-risk.md](02-risk.md) | RISK-01..12 | ✅ 静态 |
 | [docs/60-test-plan.md](60-test-plan.md) / [61-gate-report.md](61-gate-report.md) | AC 映射与门报告（§10 已有 G3 运行时证据） | 🔄 部分回填 |
 | [docs/70](70-runbook.md)/[71](71-backup-restore.md)/[72](72-monitoring.md)/[73](73-release-checklist.md)/[74](74-incident-template.md)/[75](75-perf-baseline.md) | 运行手册、备份、监控、发布、事故、性能基线 | ✅ 静态（75 含实测矩阵与复现命令） |
+| [docs/76-perf-gate-scope-proposal.md](76-perf-gate-scope-proposal.md) | 性能门槛口径提案（R1/R2/R3，**DRAFT 未生效**，待 R0/QA） | 🟡 待评审 |
+| [docs/77-ci-branch-protection.md](77-ci-branch-protection.md) | main 分支保护（P-005）配置与验证手册 | 🟡 待管理员开关（token 缺 Administration） |
+| [docs/78-g5-precheck.md](78-g5-precheck.md) | G5 上线验收预检差距清单 + 自动化结果 | ✅ 静态（自动预检见 §1） |
+| [docs/79-dependency-audit.md](79-dependency-audit.md) | 依赖漏洞扫描台账（pip-audit / pnpm audit） | ✅ 静态（RISK-16/17） |
 | [docs/15-first-ci-run.md](15-first-ci-run.md) | 首次推送与首跑清单 | ✅ 静态 |
 | [docs/17-first-run-predictions.md](17-first-run-predictions.md) | 首跑红项预测（按概率排序 + 修复方向） | ✅ 静态 |
-| [scripts/verify_all.ps1](scripts/verify_all.ps1) / [.sh](scripts/verify_all.sh) | 一键验收预检（契约/后端/前端/可选安全/E2E/性能） | ⚠️ 未执行 |
+| [scripts/verify_all.ps1](scripts/verify_all.ps1) / [.sh](scripts/verify_all.sh) | 一键验收预检（契约/后端/前端/可选安全/E2E/性能） | ✅ 本机已执行（全绿） |
+| [scripts/branch_protection.ps1](scripts/branch_protection.ps1) | 分支保护开关脚本（GET 现状 / `-Apply` 开启） | 🟡 待 admin token |
+| [scripts/g5_precheck.ps1](scripts/g5_precheck.ps1) | G5 预检自动化（PASS/FAIL/SKIP 矩阵 + JSON 证据） | ✅ 已执行（PASS=3 FAIL=2 SKIP=2） |
 
 ## 2. 后端（`server/`，19 张卡）
 
@@ -54,8 +60,8 @@
 | 资产 | 路径 | 状态 |
 |---|---|---|
 | 契约测试 | `tests/contract/`（含 AC 矩阵、错误码、OpenAPI 结构） | ✅ 55 passed / 0 xfail |
-| 安全负例 | `tests/security/`（矩阵逐行、CSRF、IDOR、注入/XSS） | ✅ 134 tests / 0 failed（1 skip + 1 xfail） |
-| E2E | `tests/e2e/`（Playwright Python，4 条主链路） | ✅ 5 UI passed（5 skip=旧 API 骨架，1 xfail） |
+| 安全负例 | `tests/security/`（矩阵逐行、CSRF、IDOR、注入/XSS） | ✅ **134 收集 / 133 passed / 0 failed（1 skip） / 0 xfail**；越权尝试写审计已实现（`action=permission.denied`，docs/12 §4） |
+| E2E | `tests/e2e/`（Playwright UI 5 条 + API 骨架 5 条） | ✅ UI **5 passed** + API 骨架 **5 passed**（DEF-009 已修：原先用未创建的随机账号恒 401）；04c 条件 xfail |
 | 性能 | `tests/perf/`（k6 100 写 + 100 读 VU，P95<300ms / 失败率<0.1% 阈值）、[docs/75](75-perf-baseline.md) 复现手册、`tests/perf/analyze_server_latency.py`（服务端侧拆解）、CI 手动 `perf` job | 🟡 **四轮真实优化**：4 vCPU 上 read p95 **37.5→19.8ms ✅**、save p95 **1006→538ms**、start p95 **1176→796ms**、失败率 0；**跳过 warm-up 窗口后服务端 save p95 = 264.6ms ✅（稳态已达标）**，仍红的只有「开场/首波 100 并发 burst」→ **待 ≥8 vCPU runner 复跑销项**；口径拆分草案见 [docs/76](76-perf-gate-scope-proposal.md)（未改阈值，待 R0/QA） |
 | 前端单测 | `web/tests/`（client/login/questions/papers/exam/result/exams/admin） | ✅ 91 passed (8 files) |
 | 后端单测 | `server/tests/`（172 例） | ✅ 172 passed / 0 failed（含新增 8 条冻结快照缓存 / 启动预热用例） |
