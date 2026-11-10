@@ -12,6 +12,9 @@
 | 原生 PG，12 worker，fsync=on | 38ms | 523ms | ❌（写尾，差 1ms） |
 | 原生 PG，12 worker，`synchronous_commit=off` | 34ms | 217ms | ✅（仅诊断用） |
 | **容器（Docker Desktop）+ 8 worker，fsync=on，k6 在容器内** | **14.2ms** | **428ms**（save-only 200ms） | ❌（仅开场 burst 超标） |
+| GitHub runner（4 vCPU，优化前，4 worker） | 301.6ms | 1173ms | ❌ |
+| **GitHub runner（4 vCPU，会话序列化优化后，4 worker）** | **19.96ms** | **711ms**（save 349ms） | ❌（仅开场 burst 超标） |
+| GitHub runner（4 vCPU，优化后，8 worker） | 43.8ms | 1409ms | ❌（过订阅，明确更差） |
 
 - **读路径**是应用容量问题：worker 数决定（本机 4 worker 即达标；容器内 8 worker 读 P95 14ms）。
 - **写/开场尾延迟**由 PostgreSQL 提交落盘（WAL fsync）主导：本机原生（NTFS）与 Docker Desktop 容器（VM 磁盘仍是 Windows NTFS 上的 VHDX）**都**出现 300–900ms 的开场 COMMIT 串行；

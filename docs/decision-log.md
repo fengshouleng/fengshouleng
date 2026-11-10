@@ -154,3 +154,9 @@
     - run `42849133088`（4 worker + 修 DEF-008）：读 p95 **301.6ms ❌**、保存 860ms、开场建会话 p95 1173ms、失败率 **0 ✅**；artifact 完整。
     - 结论：**4 vCPU 容量不足 + 开场 100 并发建会话每请求 CPU 偏高**；本机 20 核最优也只有 428ms，说明 `p95<300ms` 的开场 burst 在当前架构/该 runner 上不可达。
   - **决策待定（需产品/R0 拍板）**：① 生产选型 ≥8 vCPU 后再跑 perf 销项；② 或先做产品优化（冻结题面缓存、认证上下文复用、响应序列化），并把 burst 与稳态分开度量（阈值改动需评审）。**在完成前 G4 性能项保持 CONDITIONAL，不写通过**。
+- 2026-11-11（00:00–00:25，会话响应路径优化 + 两轮 CI perf 复测）：
+  - **优化**：① `POST /exams/{id}/sessions`、`GET /sessions/{id}` 改为直接返回 `Response(state.model_dump_json())`，跳过 FastAPI 对 100 题对象的二次 `response_model` 校验/编码（输出逐字节一致已验证）；② `service._questions_for()` 对未乱序考试按 `(paper_id, exam_id)` 缓存已构建的 100 个 `SessionQuestionOut`（LRU 32）。backend ruff/mypy + 164 tests、contract 55 全绿。
+  - **效果（GitHub 4 vCPU，4 worker）**：`session_read` p95 **301.6 → 19.96ms**（15×）、`save_p95` **860 → 349ms**、`session_start` p95 **1173 → 711ms**、失败率 **0**。
+  - **8 worker 反证**（run `42853200977`）：read 43.8ms、save 665ms、start 1409ms —— 4 vCPU 上过订阅，已回退 4 worker。
+  - **容量结论**：单次 start ≈ 12ms CPU × 100 并发 / 4 核 ≈ 300ms 下界 → 4 vCPU runner **无法稳定满足开场 burst p95<300ms**；需 ≥8 vCPU 或评审「burst 与稳态分开度量」。
+  - **G4**：维持 CONDITIONAL；性能项待选型/口径决策后，在达标 runner 上销项。

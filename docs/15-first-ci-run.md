@@ -82,5 +82,7 @@ git push -u origin main
 | **`42848561341`** | push | **success（三 job 全跑）** | backend 76s / frontend 78s / contract 16s / ci-gate 4s ← **CI 三 job 首跑全绿** |
 | `42847410502` | workflow_dispatch | failure | perf 首跑：read 90.4ms ✅ / 保存 501ms / burst 1601ms / 失败 0.13% |
 | `42849133088` | workflow_dispatch | failure | perf 二跑（4 worker）：read 301.6ms / 保存 860ms / burst 1173ms / 失败 0% |
+| `42851587298` | workflow_dispatch | failure | perf 三跑（会话序列化优化后）：**read 19.96ms ✅** / 保存 349ms / burst 711ms / 失败 0% |
+| `42853200977` | workflow_dispatch | failure | perf 四跑（8 worker 反证）：read 43.8ms / burst 1409ms → 回退 4 worker |
 
 结论：**CI 常规门（backend/frontend/contract/ci-gate）已全绿**；`perf` 门槛未过，是容量/开场 burst 问题（`docs/61 §10.2.8`），不阻塞 CI 常规门。

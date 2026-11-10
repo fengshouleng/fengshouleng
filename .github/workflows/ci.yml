@@ -377,12 +377,12 @@ jobs:
           RUN_MIGRATIONS=true
           API_PREFIX=/api
           FORWARDED_ALLOW_IPS=*
-          # 2026-11-11 第二轮：会话序列化优化后单请求 CPU 大幅下降，worker 回到 8
-          # 以吃满 4 vCPU 的 I/O 并发（每 worker 池 3+3 => 8×6=48 < PG 100）。
-          # 上一轮 4 worker 实测：read p95 20ms、开场建会话 p95 711ms（CPU 排队）。
-          WEB_CONCURRENCY=8
-          DB_POOL_SIZE=3
-          DB_MAX_OVERFLOW=3
+          # 2026-11-11 结论：4 vCPU runner 上 4 worker 是最优（8 worker 反而更差：
+          # 开场建会话 p95 711ms→1409ms、save 349→665，CPU 过订阅）。
+          # 4 worker 池 5+5 => 4×10=40 < PG 100。
+          WEB_CONCURRENCY=4
+          DB_POOL_SIZE=5
+          DB_MAX_OVERFLOW=5
           EOF
 
       - name: 启动 postgres + api（构建镜像，api 发布 18000）

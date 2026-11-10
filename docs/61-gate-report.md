@@ -199,7 +199,7 @@ docker compose version     #
 | 备份 | ✅ dump 33900 bytes、TOC 90、sha256 校验通过 | `reports/drill-backups/exam_20261109T175350Z.dump` |
 | 恢复演练 | ✅ **PASS**：restore 0s（<1800s）；行数 users 4/4、questions 3/3、papers 1/1、exams 0/0、exam_sessions 0/0；临时库已删 | `reports/drill-backups/drill-logs/backup-20261109.log` |
 | compose config | ✅ exit 0（`--env-file deploy/.env.example`） | 本次执行 |
-| 性能冒烟（k6 100 写 + 100 读 VU / 3m） | ⚠️ **本机 8 组 + GitHub runner 2 组实测完成**：本机容器（8 worker/fsync=on）read 14.2ms ✅ / 保存 199.7ms ✅ / 开场 burst 428ms ❌；GitHub 4 vCPU runner：read 90.4ms ✅（8 worker）/ 301.6ms（4 worker），开场 burst 1.1–1.8s ❌ → **容量问题 + 开场 burst 需产品优化或 ≥8 vCPU 选型**（§10.2.7、§10.2.8） | `reports/perf/**`、CI run `42847410502`/`42849133088` 的 artifact、`docs/75-perf-baseline.md` |
+| 性能冒烟（k6 100 写 + 100 读 VU / 3m） | ⚠️ **本机 8 组 + GitHub runner 4 组实测**；已做会话响应路径优化（§10.2.9）：4 vCPU 上 read p95 **19.96ms ✅**、save p95 **349ms ❌**、开场 burst p95 **711ms ❌**（失败率 0）。结论：**4 vCPU 容量不足以让开场 burst <300ms，需 ≥8 vCPU 选型或门槛口径评审** | `reports/perf/**`、`reports/ci/run-*/`、CI run `42851587298` artifact |
 | staging 部署→回滚演练 | ✅ **PASS**（2026-11-10 13:28 本机 Docker）：deploy **17s** → smoke **1s** → rollback **11s**（≤900s）→ smoke **1s**，总 **31s**，`steps` 四步全 PASS | `reports/release-drill-20261110T052821Z.json`、`deploy/evidence/release-drill-staging-20261110T052821Z.log` |
 
 **期间修复（测试缺陷，非实现缺陷）**：`test_audit_system_record_has_null_actor_and_dash_ip` 曾把 `auth.login_failed`（`actor_id=None` 但 ip 为真实地址）误当系统记录，导致偶发失败；已改为只筛 `action=user.create` 且 `actor_id=None` 的记录。
@@ -207,12 +207,12 @@ docker compose version     #
 **G4 仍缺（性能容量，需产品或选型决策）**：
 1. ~~staging 部署→回滚演练~~ ✅ 已完成（四步 PASS、rollback 11s）；
 2. ~~CI 三 job 首跑~~ ✅ 已完成（run `42848561341`：backend 76s / frontend 78s / contract 16s / ci-gate 绿；期间修复 DEF-005/006/007）；
-3. **性能门槛仍未通过**：GitHub 4 vCPU runner 上 read 90.4ms ✅ 但开场 burst 1.1–1.8s ❌；本机 20 核最优 428ms ❌。需要**二选一/并行**：
-   - **选型**：生产按 ≥8 vCPU、`WEB_CONCURRENCY≈vCPU` 部署（CI 标准 runner 只有 4 vCPU，不足以作为销项环境）；
-   - **产品优化**：降低开场建会话每请求 CPU（冻结题面缓存、认证上下文复用、响应序列化），并在 `answer_save` 场景把「同秒开考 burst」与「稳态保存」分开度量（需 R0/QA 评审，不允许偷改阈值）。
+3. **性能门槛仍未通过**：已做会话响应路径优化（§10.2.9），4 vCPU runner 上 read p95 **19.96ms ✅**、save p95 **349ms**、开场 burst p95 **711ms**（失败率 0）。按 CPU 推算 4 vCPU 上开场 burst 无法稳定 <300ms，需要：
+   - **选型**：生产按 ≥8 vCPU、`WEB_CONCURRENCY≈vCPU` 部署，在达标 runner 上重跑 `perf` job 销项；或
+   - **门槛口径评审**：把「同秒开考 burst（建会话）」与「稳态保存/读取」分开度量（`answer_save` 目前把 100 个 start 混入 p95）。**需 R0/QA 批准，不得私自改阈值。**
 4. 完成 3 之后，在满足选型的 runner 上重跑 `perf` job 销项。
 
-**结论**：功能、契约、安全、E2E、备份恢复、compose、**staging 演练、CI 三 job 首跑**均有真实运行证据；**性能已定位为「4 vCPU 容量不足 + 开场 burst 每请求 CPU 偏高」，尚未达门槛**。G4 = **CONDITIONAL（性能容量待决策/优化）**。
+**结论**：功能、契约、安全、E2E、备份恢复、compose、**staging 演练、CI 三 job 首跑**均有真实运行证据；**性能已完成两轮真实优化（读 301→20ms、开场 1173→711ms、失败率 0），但 4 vCPU 容量下开场 burst 未达门槛**。G4 = **CONDITIONAL（性能容量/口径待决策）**。
 
 ### 10.2 PERF-001 性能缺陷记录（G4 阻断项）— 2026-11-10 原生 PG 复测与修复
 
@@ -307,6 +307,26 @@ Docker Desktop 恢复可用（engine 29.9.3、`docker compose config` exit 0）�
 |---|---|---|---|---|---|---|
 | `42847410502` | `22cd4c6`，`WEB_CONCURRENCY=8` | **90.4ms ✅** | 510ms ❌ | **1601ms ❌**（`session_start` p95 1791ms） | 0.13% ❌（21 次 EOF + 21 次读场景建会话失败） | 8 worker 在 4 vCPU 上过订阅；k6 无法写 summary（DEF-008） |
 | `42849133088` | `75d9112`，`WEB_CONCURRENCY=4` | **301.6ms ❌**（p90 250ms） | 860ms ❌ | **会话建连 p95 1173ms** | **0 ✅** | 无 EOF，但 4 worker 处理 200 VU 仍不足；artifact 完整（summary + 容器日志） |
+| `42851587298` | `4af7b38`（会话序列化优化后），4 worker | **19.96ms ✅** | **349.3ms ❌** | **503.9ms ❌**（`session_start` p95 710.9ms） | **0 ✅** | 优化见效：读 15×、开场 1.65× |
+| `42853200977` | `e2deea7`，8 worker | **43.8ms ✅** | 664.8ms ❌ | 1021.5ms ❌（`session_start` p95 1409ms） | 0 ✅ | 8 worker 在 4 vCPU 上再次过订阅，确认 **4 worker 更优** |
+
+#### 10.2.9 会话响应路径优化（2026-11-11）与容量结论
+
+**优化内容**（已合入 `server/app/sessions/`）：
+1. `POST /exams/{id}/sessions`、`GET /sessions/{id}` 直接返回 `Response(state.model_dump_json())`，
+   跳过 FastAPI 对 100 题大对象再做一次 `response_model` 校验 + 编码（实测输出与默认路径**逐字节一致**）；
+2. `service._questions_for()`：未启用乱序时按 `(paper_id, exam_id)` 缓存已构建的 100 个
+   `SessionQuestionOut`（LRU 32），不再每请求重建。
+
+**效果（同为 GitHub 4 vCPU runner，4 worker）**：`session_read` p95 **301.6 → 19.96ms**（15×），
+`save_p95` **860 → 349ms**，`session_start` p95 **1173 → 711ms**，失败率保持 0。
+
+**容量结论**：优化后剩余瓶颈是**开场 100 并发建会话的 CPU 排队**。按 4 worker / 100 并发推算
+单次 start ≈ 12ms CPU（占满 4 核 ≈ 300ms），因此：
+- 4 vCPU runner 上 `session_start` p95 理论下限已接近 300ms，**无法稳定压到 300ms 以下**；
+- 8 worker 反而更差（1409ms）→ 不是 worker 数问题，是核数问题；
+- 若生产按 **≥8 vCPU** 部署（`WEB_CONCURRENCY≈vCPU`），有望进入门槛；这需要在达标的 runner 上验证。
+- 另一条路径是**评审门槛口径**：把「同秒开考 burst」与「稳态保存/读取」分开度量（`answer_save` 目前把 100 个 start 混进 p95，而 start 是幂等建会话、与“作答保存”是两个语义）。**该改动必须 R0/QA 评审，不得私自调阈值。**
 
 **解读**：
 - 读路径在 8 worker 时 90ms 达标，4 worker 时 302ms 贴线失败 → **4 vCPU 是当前瓶颈**，而 8 worker 虽压低延迟却在 4 核上过订阅导致连接被重置（EOF，0.13% 失败率）。
@@ -323,6 +343,9 @@ Docker Desktop 恢复可用（engine 29.9.3、`docker compose config` exit 0）�
 | `42848561341` | push | **success（三 job 全跑）** | backend 76s / frontend 78s / contract 16s / ci-gate 4s → **CI 三 job 首跑全绿** |
 | `42847410502` | workflow_dispatch | failure | perf job 首跑失败（容量，见 §10.2.8） |
 | `42849133088` | workflow_dispatch | failure | perf job 第二跑（4 worker）：失败率 0，但延迟未达标 |
+| `42851333266` / `42852784487` | push | success | 会话优化 / perf 环境调参两次 push run（backend 绿） |
+| `42851587298` | workflow_dispatch | failure | perf 三跑（优化后 4 worker）：read 19.96ms ✅、save 349ms、burst 711ms、失败率 0 |
+| `42853200977` | workflow_dispatch | failure | perf 四跑（优化后 8 worker）：证明 8 worker 更差，已回退 4 worker |
 
 > 全部 run 均在 `https://github.com/fengshouleng/fengshouleng/actions`；artifacts：perf job 上传 `reports/perf/**`（k6 日志 + summary.json + 失败时容器日志）。
 
