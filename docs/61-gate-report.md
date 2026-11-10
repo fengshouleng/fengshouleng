@@ -215,7 +215,7 @@ docker compose version     #
 | 2 | 原生 PG 16.4 + 单 uvicorn worker（= 镜像默认），API stdout 落文件 | session_read p95 **596ms**、answer_save p95 **20.9s**、失败率 0.36%；PG 进程 CPU 仅 2.5s | **应用单进程单核 CPU 饱和**：200 VU 下吞吐 92 req/s。读路径随 worker 数线性改善 → 部署容量问题 |
 | 3 | 同一原生栈，改 worker 数 / 提交模式 | save 尾延迟对 worker 数不敏感（4→12 worker：589→523ms），`synchronous_commit=off` 后骤降到 217ms | **开场 100 并发建会话 + 交卷的 WAL fsync 串行**是本机（NTFS）写尾延迟主因，属存储/OS 属性 |
 
-> 更正：首测曾把 10–40s 延迟**全部**归因于 Docker Desktop 端口代理。原生复测证明该归因不完整——端口代理的并发 `CONNECT` 超时（psycopg 直连 50/50 超时）是**独立现象**，而应用侧的 30s 级延迟由「日志锁 + 单 worker + 提交落盘」共同造成。
+> 更正（两次）：首测曾把 10–40s 延迟**全部**归因于 Docker Desktop 端口代理；原生复测（§10.2.2）证明归因不完整，Docker 修复后的复测（§10.2.6）进一步证明**端口代理在健康环境下不是瓶颈**。30s 级延迟由「日志锁 + 单 worker + 提交落盘」共同造成。
 
 #### 10.2.2 实测矩阵（原生 PG 16.4；Windows 11 / i5-13600KF 20 逻辑核；k6 同机；100 写 + 100 读 VU、3min）
 
@@ -251,4 +251,17 @@ docker compose version     #
 #### 10.2.5 复测门槛
 
 `http_req_failed < 0.1%`、两个场景 P95 < 300ms（`tests/perf/k6/exam_flow.js` 阈值）。判定只看 k6 `summary.json`，不接受口头「差不多」。
+
+#### 10.2.6 追加证据（2026-11-10 12:30 起，Docker/WSL 修复后）
+
+Docker Desktop 恢复可用（engine 29.9.3、`docker compose config` exit 0）后，对**首测的环境归因**做了直接复测，结论再次修正：
+
+| 复测项 | 方法 | 结果 |
+|---|---|---|
+| host→container 端口代理并发连接 | `postgres:16.4-alpine` 发布 `56432`，宿主 psycopg 并发建 50 条连接 | **50/50 成功，总耗时 0.10s，最慢 71.7ms** |
+| compose 配置（含 §10.2.3 容量改动） | `docker compose --env-file deploy/.env.staging config -q` | **exit 0**，`WEB_CONCURRENCY/DB_POOL_SIZE/DB_MAX_OVERFLOW` 正确渲染 |
+
+**结论修正**：首测「50 个并发连接全部 ConnectionTimeout」不是 Docker 的固有上限，而是当时 **WSL/Docker 已进入损坏状态**的表现。因此：
+- PERF-001 的真正原因 = **单 worker CPU 容量 + `access_log` 全局锁遇慢 stdout + 本机 NTFS 提交落盘**；
+- 端口代理在健康环境下不是瓶颈 → Linux/CI 上「宿主 k6 → 发布端口 → 容器 api」的压测路径可行（CI `perf` job 按此设计，见 `.github/workflows/ci.yml`）。
 

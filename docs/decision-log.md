@@ -124,3 +124,9 @@
   - **实测矩阵（6 组）与门槛判定**：见 `docs/61-gate-report.md §10.2.2`；通过配置为 **12 worker + `synchronous_commit=off`**：save p95 217ms、read p95 34ms、失败率 0（全门槛 PASS）。
   - **产品修复（部署配置）**：`deploy/docker-entrypoint.sh` 支持 `WEB_CONCURRENCY`（`--workers`）；compose api 增加 `WEB_CONCURRENCY=4 / DB_POOL_SIZE=10 / DB_MAX_OVERFLOW=10`（4×20=80 < postgres max_connections=100）；`.env.example` 记录连接预算公式。Docker 不可用，`docker compose config` 未复跑，仅做 YAML 解析校验。
   - **剩余**：在 fsync=on 的 Linux/SSD 或 CI runner 复跑 `docs/75`，save p95 <300ms 才为 G4 性能销项；`synchronous_commit=off` 仅用于定位，禁止用于生产判定。
+- 2026-11-10（12:30，环境恢复 + 入库 + Docker 复测）：
+  - **Git 入库**：Git 2.56 已安装（`C:\Program Files\Git`，附 bash 5.3）；仓库 `git init -b main`，新增 `.gitattributes`（`*.sh/*.py/*.yml`=LF、`*.ps1/*.cmd`=CRLF，避免 Linux/容器脚本被 CRLF 破坏），`.gitignore` 补 `*.egg-info/`、`pytest-of-*/`、`tests/perf/data/`；**287 文件、初始提交 `d28d652`**，工作区干净。
+  - **Docker/WSL 恢复**：`wsl -l -v` 可见 `docker-desktop`（Stopped 可启动），Docker engine **29.9.3** 可用；`docker compose config`（.env.example 与 .env.staging）**exit 0**，§10.2.3 的容量变量正确渲染 → RISK-13 关闭。
+  - **首测环境归因被推翻**：健康 Docker 下宿主 psycopg 对发布端口**并发 50 条连接 50/50 成功（0.10s，最慢 71.7ms）** → 旧结论「端口代理无法承载并发」是 WSL/Docker 损坏期表现，不是 Docker 固有上限；PERF-001 真因确认为「单 worker + 日志锁 + NTFS fsync」。
+  - **CI 增加手动 `perf` job**：`workflow_dispatch` 触发，compose 起 postgres+api（`deploy/docker-compose.perf.yml` 临时发布 18000），造数 + `grafana/setup-k6-action@v1` + k6 阈值判定，summary 归档 artifact；`ci-gate` 已纳入 `perf`（PR 中 skipped 属预期）。
+  - **下一步**：容器内（Linux 文件系统、fsync=on）复跑 100+100 VU，验证 save p95 <300ms；随后 staging 部署→回滚演练。

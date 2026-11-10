@@ -16,6 +16,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # 性能基线是手动触发（3 分钟压测 + 镜像构建，不适合每次都跑）；见下方 perf job
+  workflow_dispatch:
 
 # 只读仓库内容：CI 不写回、不部署、不使用任何密钥
 permissions:
@@ -325,12 +327,124 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------------
+  # 性能基线（手动触发，不进 PR 门）：100 写 + 100 读 VU，门槛 P95<300ms / 失败率<0.1%
+  # 为什么手动：3 分钟压测 + 镜像构建会显著拖慢 PR；发版前/G4 证据由人工触发。
+  # 拓扑：compose 起 postgres + api（api 经 perf 覆盖文件临时发布 18000），
+  #       k6 在 runner 上打宿主端口（Linux runner 的端口发布是 iptables DNAT，
+  #       不存在 Docker Desktop 的 host↔container 代理并发瓶颈）。
+  # 判据：k6 阈值失败 → 非 0 退出 → job 失败；summary.json 作为 artifact 留档。
+  # ---------------------------------------------------------------------------
+  perf:
+    name: perf (k6 100+100 VU)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      COMPOSE_ARGS: "-f deploy/docker-compose.yml -f deploy/docker-compose.perf.yml --env-file deploy/.env.ci-perf -p exam-perf"
+      EXAM_API_URL: "http://127.0.0.1:18000/api"
+      EXAM_ADMIN_USERNAME: perf-admin
+      EXAM_ADMIN_PASSWORD: ci-perf-admin
+      EXAM_QA_PASSWORD: ci-perf-students
+      PERF_REPORT_DIR: reports/perf/ci
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 生成一次性环境文件（CI 临时库，非真实密钥）
+        shell: bash
+        run: |
+          mkdir -p deploy
+          cat > deploy/.env.ci-perf <<'EOF'
+          COMPOSE_PROJECT_NAME=exam-perf
+          APP_ENV=staging
+          APP_VERSION=1.0.0
+          IMAGE_TAG=ci-perf
+          POSTGRES_DB=exam
+          POSTGRES_USER=exam
+          POSTGRES_PASSWORD=ci-perf-not-a-secret
+          SESSION_TTL_HOURS=8
+          SESSION_COOKIE_SECURE=false
+          RUN_MIGRATIONS=true
+          API_PREFIX=/api
+          FORWARDED_ALLOW_IPS=*
+          WEB_CONCURRENCY=8
+          DB_POOL_SIZE=5
+          DB_MAX_OVERFLOW=5
+          EOF
+
+      - name: 启动 postgres + api（构建镜像，api 发布 18000）
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/perf
+          docker compose ${COMPOSE_ARGS} up -d --build postgres api
+
+      - name: 等待 api 健康（最多 180s）
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if curl -fsS "${EXAM_API_URL%/api}/healthz" | grep -q '"db":"ok"'; then
+              echo "api healthy after ${i} tries"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::api 未在 180s 内健康"
+          docker compose ${COMPOSE_ARGS} logs api
+          exit 1
+
+      - name: 安装造数依赖 + 创建 admin
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r tests/requirements.txt
+          docker compose ${COMPOSE_ARGS} exec -T \
+            -e EXAM_ADMIN_PASSWORD="${EXAM_ADMIN_PASSWORD}" \
+            api python -m app.cli create-admin \
+              --username "${EXAM_ADMIN_USERNAME}" --display-name "性能管理员" \
+              --password-env EXAM_ADMIN_PASSWORD
+
+      - name: 造数（100 学生 + 100 题 + 100 分卷 + 已发布考试）
+        shell: bash
+        run: |
+          set -euo pipefail
+          export EXAM_RUN_ID="perf-$(date -u +%Y%m%d-%H%M%S)"
+          python tests/perf/prepare_data.py
+
+      - name: 安装 k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: 性能压测（阈值失败即 job 失败）
+        shell: bash
+        run: |
+          set -o pipefail
+          k6 run tests/perf/k6/exam_flow.js 2>&1 | tee reports/perf/k6-ci.log
+
+      - name: 归档 summary / 日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/perf/**/summary.json
+            reports/perf/k6-ci.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: 清理（删除容器与卷）
+        if: always()
+        shell: bash
+        run: docker compose ${COMPOSE_ARGS} down -v
+
+  # ---------------------------------------------------------------------------
   # 汇总门：任一 job 失败 / 取消 → 本 job 失败；被路径过滤跳过的 job 不算失败
   # ---------------------------------------------------------------------------
   ci-gate:
     name: CI 汇总门
     if: always()
-    needs: [changes, backend, frontend, contract]
+    needs: [changes, backend, frontend, contract, perf]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -341,10 +455,11 @@ jobs:
           BACKEND_RESULT: ${{ needs.backend.result }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           CONTRACT_RESULT: ${{ needs.contract.result }}
+          PERF_RESULT: ${{ needs.perf.result }}
         run: |
           set -euo pipefail
 
-          echo "changes=${CHANGES_RESULT} backend=${BACKEND_RESULT} frontend=${FRONTEND_RESULT} contract=${CONTRACT_RESULT}"
+          echo "changes=${CHANGES_RESULT} backend=${BACKEND_RESULT} frontend=${FRONTEND_RESULT} contract=${CONTRACT_RESULT} perf=${PERF_RESULT}"
 
           if [ "${CHANGES_RESULT}" != "success" ]; then
             echo "::error::变更范围识别失败（${CHANGES_RESULT}），无法判定需要运行哪些 job"
@@ -352,7 +467,8 @@ jobs:
           fi
 
           failed=0
-          for result in "${BACKEND_RESULT}" "${FRONTEND_RESULT}" "${CONTRACT_RESULT}"; do
+          # perf 仅在 workflow_dispatch 运行，PR 中为 skipped，属预期
+          for result in "${BACKEND_RESULT}" "${FRONTEND_RESULT}" "${CONTRACT_RESULT}" "${PERF_RESULT}"; do
             case "${result}" in
               success | skipped) ;;
               *)

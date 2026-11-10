@@ -16,7 +16,7 @@
 | RISK-10 | 数据备份未演练，故障时不可恢复 | 中 | 高 | T4.3 备份/恢复演练列入 G4 准入 | 演练未做 | R6 |
 | RISK-11 | 逐题解析 `explanation` 未进冻结快照，题库后续编辑会改变历史成绩页解析 | 中 | 低 | V1 接受为已知限制；判分与分数不受影响；彻底修复需扩展 `freeze_paper` 快照（CHG 级） | 教师反馈「旧成绩解析变了」 | R2/R3 |
 | RISK-12 | FE 测试依赖 antd 组件内部 `data-*` 透传（如 InputNumber），CI 首跑可能红 | 中 | 低 | 断言改到组件外层容器；FE-003 已标注 | frontend job 测试失败 | R4 |
-| RISK-13 | 本机 Docker Desktop / WSL 损坏（`REGDB_E_CLASSNOTREG`、引擎无法启动），阻塞 staging 演练与容器内性能复测 | 高 | 中 | 修复 WSL/Docker 或在 Linux/CI runner 执行；`deploy/release/*.sh` 与 perf compose 均可在 CI 跑 | `docker info` 失败 / `wsl --shutdown` 报注册表错误 | R6/R0 |
+| RISK-13 | 本机 Docker Desktop / WSL 曾损坏（`REGDB_E_CLASSNOTREG`、引擎无法启动），阻塞 staging 演练与容器内性能复测 | 低（已修复） | 中 | **2026-11-10 12:30 已修复**：`wsl -l -v` 可见 `docker-desktop` distro，Docker engine 29.9.3 可用，`docker compose config` exit 0；容器内性能复测随后执行 | `docker info` 失败 / `wsl --shutdown` 报注册表错误 | R6/R0 |
 | RISK-14 | 性能尾延迟受存储/OS 影响：本机 NTFS 上 100 并发开考的 WAL `fsync` 串行，`answer_save` p95 300–590ms；Linux/SSD 未实测 | 中 | 高 | 原生复测已完成（`docs/61 §10.2`、`docs/75`）；部署配置已加 `WEB_CONCURRENCY` + 池摊分；**最终销项需在 fsync=on 的 Linux/SSD 上复跑 k6** | Linux 复测 save p95 ≥300ms | R0/R6 |
 | RISK-15 | `app/middleware/access_log.py` 用模块级锁 + 每行 `flush()` 写 stdout：日志消费者慢（PowerShell 管道、前台 `compose up`、慢 journald）时会把全部请求串行化，实测 p95 700ms→20–31s 并诱发 `QueuePool` 500 | 中 | 高 | 压测/生产用 detached + json-file 限额，不把容器日志接到慢消费者；长期改为队列异步写（RISK 记录，不改本批代码） | 日志管道下 P95 突增到秒级、`QueuePool timeout` 500 | R0 |
 

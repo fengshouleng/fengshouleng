@@ -1,0 +1,14 @@
+# deploy/docker-compose.perf.yml
+# 仅供性能/容量测试的 compose 覆盖文件（不用于 staging/prod 部署）。
+#
+# 为什么需要：默认 compose 不发布 api 端口（只允许 edge 网络内的 nginx 访问）。
+# 性能测试要由宿主上的 k6 直接打 api（Linux runner 上端口发布是 iptables DNAT，
+# 不存在 Docker Desktop 的 host↔container 代理并发瓶颈），因此这里临时发布 18000。
+#
+# 用法（与主 compose 叠加）：
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.perf.yml \
+#     --env-file deploy/.env.ci-perf -p exam-perf up -d --build postgres api
+services:
+  api:
+    ports:
+      - "18000:8000"
