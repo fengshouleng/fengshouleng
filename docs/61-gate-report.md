@@ -200,6 +200,7 @@ docker compose version     #
 | 恢复演练 | ✅ **PASS**：restore 0s（<1800s）；行数 users 4/4、questions 3/3、papers 1/1、exams 0/0、exam_sessions 0/0；临时库已删 | `reports/drill-backups/drill-logs/backup-20261109.log` |
 | compose config | ✅ exit 0（`--env-file deploy/.env.example`） | 本次执行 |
 | 性能冒烟（k6 100 写 + 100 读 VU / 3m） | ⚠️ **两轮代码优化后**：CI 4 vCPU 上 read p95 **19.96–37.5ms ✅**、p50 start 310→**166ms**、p50 save 99→**32ms**、失败率 0；但开场 burst/保存 p95 仍 **500–1176ms ❌**（4 vCPU CPU 争用；同配置 run 间波动 711–1176ms）。单请求服务端 CPU 已压到 2.7–5.2ms（§10.2.10）→ 结论：**需 ≥8 vCPU 或评审拆分 burst 与稳态口径** | `reports/perf/**`、`reports/ci/run-*/`、CI run `42859094367` artifact |
+| 监控告警链路（REL-003 验收动作） | ✅ **27 passed / 0 failed / 0 skipped**：健康失败/磁盘阈值/备份陈旧三类真实告警 + `ALERT_CMD` 钩子 + `--reset`/三个 `--dry-run` 零副作用 + 慢请求解析（JSON/nginx） | `deploy/evidence/monitoring/smoke-alert-20261110T173922Z.log`（证据目录按 `.gitignore` 不入库，仅本机留档） |
 | staging 部署→回滚演练 | ✅ **PASS**（2026-11-10 13:28 本机 Docker）：deploy **17s** → smoke **1s** → rollback **11s**（≤900s）→ smoke **1s**，总 **31s**，`steps` 四步全 PASS | `reports/release-drill-20261110T052821Z.json`、`deploy/evidence/release-drill-staging-20261110T052821Z.log` |
 
 **期间修复（测试缺陷，非实现缺陷）**：`test_audit_system_record_has_null_actor_and_dash_ip` 曾把 `auth.login_failed`（`actor_id=None` 但 ip 为真实地址）误当系统记录，导致偶发失败；已改为只筛 `action=user.create` 且 `actor_id=None` 的记录。

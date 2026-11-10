@@ -100,6 +100,8 @@ bash deploy/monitoring/slow_requests.sh --dry-run
 三条命令都应打印计划并以 **0** 退出。`health_probe --dry-run` 会打印端点、阈值、状态目录，并把
 `ALERT_CMD` 显示为“已配置/未配置”（**不打印命令内容**，避免泄露 webhook 令牌）。
 
+**2026-11-11 实测（本机 Git-bash，仓库根）**：三条均 `exit=0`，且未创建状态/报告目录。
+
 ### 3.3 告警链路自测（验收必跑）
 
 ```bash
@@ -111,6 +113,17 @@ echo "exit=$?"
 用混合格式日志验证慢请求统计；验证 `--reset`/`--dry-run` 无副作用。预期 `passed` 全过、`failed=0`，
 证据写入 `deploy/evidence/monitoring/smoke-alert-<UTC>.log`。失败时加 `--keep` 保留临时目录：
 `bash deploy/monitoring/smoke_alert.sh --keep`。
+
+**2026-11-11 实测（TASK-REL-003 验收动作已执行）**：
+
+```text
+== smoke 结果：passed=27 failed=0 skipped=0 ==
+证据文件：deploy/evidence/monitoring/smoke-alert-20261110T173922Z.log
+```
+
+覆盖：健康探测连续失败告警 + 告警文件 `reason=health_probe_failed` + `ALERT_CMD` 钩子被调用 +
+`--reset` 清理 + 三个 `--dry-run` 零副作用 + 磁盘阈值 `disk_high` + 备份陈旧 `backup_stale` +
+慢请求解析（JSON/nginx 两种格式，slow=4 / http_5xx=2）+ 非法参数退出码 2。
 
 ### 3.4 手工触发一次真实告警（staging 验收动作）
 
@@ -129,6 +142,11 @@ STATE_DIR=deploy/evidence/monitoring \
 
 预期：第一次 `exit=3`（达到阈值并告警）；`--reset` 后 `exit=0` 且告警文件消失。
 这一步就是验收项“告警脚本在 staging 可手动触发并留下记录”。
+
+**2026-11-11 实测（本机，未依赖 staging 栈）**：`BASE_URL=http://127.0.0.1:9`
+`HEALTH_FAIL_THRESHOLD=1` 触发 → `exit=3`，`alert_health_probe.log` 落盘
+`reason=health_probe_failed` + `source=health_probe` + 真实 `message`；
+随后 `--reset` → `exit=0`，状态与告警文件均被清除。
 
 ### 3.5 安装定时任务
 

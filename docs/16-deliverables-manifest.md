@@ -1,4 +1,4 @@
-# 16 · 交付物清单与验证状态（Handoff Manifest）
+﻿# 16 · 交付物清单与验证状态（Handoff Manifest）
 
 > 用途：交接时一眼看清「有什么、在哪、验证到哪一步」。
 > 核心口径：**「静态审查通过」≠「已验证」**。本清单把两者严格分开，不做美化。
@@ -56,9 +56,9 @@
 | 契约测试 | `tests/contract/`（含 AC 矩阵、错误码、OpenAPI 结构） | ✅ 55 passed / 0 xfail |
 | 安全负例 | `tests/security/`（矩阵逐行、CSRF、IDOR、注入/XSS） | ✅ 134 tests / 0 failed（1 skip + 1 xfail） |
 | E2E | `tests/e2e/`（Playwright Python，4 条主链路） | ✅ 5 UI passed（5 skip=旧 API 骨架，1 xfail） |
-| 性能 | `tests/perf/`（k6 100 写 + 100 读 VU，P95<300ms / 失败率<0.1% 阈值）、[docs/75](75-perf-baseline.md) 复现手册、CI 手动 `perf` job | 🟡 **两轮真实优化 + 逐请求剖析**：4 vCPU 上 read p95 **19.96–37.5ms ✅**、start p50 **310→166ms**、save p50 **99→32ms**、失败率 0；单请求服务端 CPU 2.7–5.2ms。开场 burst p95 仍 500–1176ms（4 vCPU 共享争用）→ **需 ≥8 vCPU 或 R0/QA 评审拆分阈值**（`docs/61 §10.2.10`） |
+| 性能 | `tests/perf/`（k6 100 写 + 100 读 VU，P95<300ms / 失败率<0.1% 阈值）、[docs/75](75-perf-baseline.md) 复现手册、`tests/perf/analyze_server_latency.py`（服务端侧拆解）、CI 手动 `perf` job | 🟡 **四轮真实优化**：4 vCPU 上 read p95 **37.5→19.8ms ✅**、save p95 **1006→538ms**、start p95 **1176→796ms**、失败率 0；**跳过 warm-up 窗口后服务端 save p95 = 264.6ms ✅（稳态已达标）**，仍红的只有「开场/首波 100 并发 burst」→ **待 ≥8 vCPU runner 复跑销项**；口径拆分草案见 [docs/76](76-perf-gate-scope-proposal.md)（未改阈值，待 R0/QA） |
 | 前端单测 | `web/tests/`（client/login/questions/papers/exam/result/exams/admin） | ✅ 91 passed (8 files) |
-| 后端单测 | `server/tests/`（164 例） | ✅ 164 passed / 0 failed |
+| 后端单测 | `server/tests/`（172 例） | ✅ 172 passed / 0 failed（含新增 8 条冻结快照缓存 / 启动预热用例） |
 
 ## 5. 部署与运维（`deploy/`，5 张卡）
 
@@ -66,7 +66,7 @@
 |---|---|---|
 | 容器编排 | `docker-compose.yml`、`Dockerfile.api/web`、`nginx.conf` | ✅ `compose config` 通过（exit 0） |
 | 备份/恢复 | `backup/*.sh`、`restore_drill.sh` | ✅ 备份 + 恢复演练 **PASS**（DR-20261110-01） |
-| 监控告警 | `monitoring/*.sh`、`docs/72` | ⚠️ dry-run 未执行（验证优先级低） |
+| 监控告警 | `monitoring/*.sh`、`docs/72` | ✅ **告警链路自测 27 passed / 0 failed**（真实触发健康失败/磁盘/备份陈旧三类告警 + `ALERT_CMD` 钩子 + `--reset` 与三个 `--dry-run` 零副作用）；另手工触发一次真实告警 `exit=3`→复位 `exit=0`。证据 `deploy/evidence/monitoring/`（目录按 `.gitignore` 不入库） |
 | 发布/回滚 | `release/deploy.sh`、`rollback.sh`、`staging_drill.sh` | ✅ **staging 部署→回滚演练 PASS**（部署 17s、回滚 11s、两次冒烟全过，`reports/release-drill-20261110T052821Z.json`）；演练暴露的 2 个脚本缺陷已修（DEF-002/003） |
 | CI | `.github/workflows/ci.yml`（含手动 `perf` job） | ✅ **CI 三 job 首跑全绿**（run `42848561341`：backend 76s / frontend 78s / contract 16s / ci-gate 4s）；⚠️ `perf` job 在 4 vCPU runner 未达门槛（容量问题，见 `docs/61 §10.2.8`） |
 
@@ -74,6 +74,6 @@
 
 - ✅ **设计与实现**：V1 功能面完整（F1–F7），契约经 3 轮修订收敛到 v1.0.3。
 - ✅ **已验证（2026-11-10 本机真实执行）**：contract 55、backend 164、frontend 91、security 134（0 failed）、E2E 5 条 UI 链路、PG 迁移 0001→0006、备份 33900B/TOC 90、恢复演练 PASS、compose config OK。
-- ⚠️ **未验证（环境型）**：**性能门槛的最终销项**（原生 PG 已实测 6 组、参考机 12 worker + 快提交全绿；但 fsync=on 的 Linux/SSD 未测，见 `docs/61 §10.2`、`docs/75`）、staging 部署回滚演练（本机缺 bash/git 与镜像构建条件）、CI 三 job 首跑（未推送）。
+- ⚠️ **未验证（环境型，唯一剩余）**：**性能门槛的最终销项**——4 vCPU 上稳态已达标（warm-up 后服务端 save p95 264.6ms），但「同秒 100 学生开考 + 首波保存」仍超阈值；**等 ≥8 vCPU runner 到位后重跑 `perf` job 销项**（`docs/61 §10.4`、`docs/75`）。staging 部署回滚演练与 CI 三 job 首跑均已完成（见 §5）。
 - 🟡 **放行口径**：G4 判 **CONDITIONAL PASS**——代码、安全、E2E 证据充分；剩余为环境型（性能 Linux 销项、staging 演练、CI 首跑），不改变代码结论但阻塞正式签字；详见 [docs/61-gate-report.md §10.1](61-gate-report.md)。
 - 🟢 **P2 已清**：FE-006 管理后台已完成；v1.0.3 断言已同步（contract 0 xfail）。
