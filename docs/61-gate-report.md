@@ -265,3 +265,26 @@ Docker Desktop 恢复可用（engine 29.9.3、`docker compose config` exit 0）�
 - PERF-001 的真正原因 = **单 worker CPU 容量 + `access_log` 全局锁遇慢 stdout + 本机 NTFS 提交落盘**；
 - 端口代理在健康环境下不是瓶颈 → Linux/CI 上「宿主 k6 → 发布端口 → 容器 api」的压测路径可行（CI `perf` job 按此设计，见 `.github/workflows/ci.yml`）。
 
+#### 10.2.7 容器内实测（2026-11-10 12:50，fsync=on，8 worker，Docker Desktop on Windows）
+
+拓扑：`postgres:16.4-alpine` + `exam-api`（本次 Dockerfile 构建，`WEB_CONCURRENCY=8 / DB_POOL_SIZE=5 / DB_MAX_OVERFLOW=5`），k6 v0.49.0 直接跑在 **api 容器内**（`127.0.0.1:8000` loopback），100 写 + 100 读 VU、3min。**这是第一份「Linux 容器 + fsync=on」的真实数据。**
+
+| 指标 | 结果 | 门槛 | 判定 |
+|---|---|---|---|
+| `session_read` p95 | **14.2ms**（p90 9.9ms / p99 38.9ms） | <300ms | ✅ |
+| `save_p95`（仅保存请求） | **199.7ms**（p90 148.5ms / p99 359ms） | <300ms | ✅ |
+| `answer_save` p95（含开场 100 个会话创建） | **428.4ms**（p90 319ms / p99 593ms / max 749ms） | <300ms | ❌ |
+| `http_req_failed` | 0.09% | <0.1% | ✅（贴线） |
+
+**解读**：
+- 读路径与保存路径在容器内均达标，且比原生 Windows 好一个量级（read 14.2ms vs 38ms）→ **多 worker + 容器网络内的应用容量没有问题**；
+- 唯一超标的是**开场 burst**（100 名学生同一秒建会话）：每条 = INSERT session + audit 行 + COMMIT，p99 593ms；
+- 该 tail 在**本机原生（NTFS）与 Docker Desktop 容器（VM 磁盘仍落在 Windows NTFS 的 VHDX 上）**都出现，说明瓶颈是**宿主存储的 flush 延迟**，不是应用逻辑，也不是容器本身；
+- 因此**本机无法代表真实 Linux SSD**：要把 `answer_save` p95 压到 300ms 以下，必须在一台真实 Linux/SSD runner（GitHub Actions ubuntu 或云主机）上跑 CI `perf` job 或 `docs/75 §6` 命令。
+
+证据：`reports/perf/docker-container-20261110-1250/`（`summary.json`、`k6-container.log`）。
+
+> 诊断补充（同一容器，仅把 PG 改为 `synchronous_commit=off`，`reports/perf/docker-container-syncoff-20261110-1255/`）：
+> `answer_save` p95 **252ms ✅**、`session_read` p95 **21.9ms ✅**、保存 p95 **229ms ✅**、失败率 **0 ✅**。
+> 同一拓扑、同一数据量，仅去掉提交落盘 → 开场 burst 从 428ms 掉到 252ms，**确认写尾就是 WAL fsync 串行**（该配置只用于诊断，不得用于生产判定）。
+

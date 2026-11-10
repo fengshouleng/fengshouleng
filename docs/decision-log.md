@@ -130,3 +130,10 @@
   - **首测环境归因被推翻**：健康 Docker 下宿主 psycopg 对发布端口**并发 50 条连接 50/50 成功（0.10s，最慢 71.7ms）** → 旧结论「端口代理无法承载并发」是 WSL/Docker 损坏期表现，不是 Docker 固有上限；PERF-001 真因确认为「单 worker + 日志锁 + NTFS fsync」。
   - **CI 增加手动 `perf` job**：`workflow_dispatch` 触发，compose 起 postgres+api（`deploy/docker-compose.perf.yml` 临时发布 18000），造数 + `grafana/setup-k6-action@v1` + k6 阈值判定，summary 归档 artifact；`ci-gate` 已纳入 `perf`（PR 中 skipped 属预期）。
   - **下一步**：容器内（Linux 文件系统、fsync=on）复跑 100+100 VU，验证 save p95 <300ms；随后 staging 部署→回滚演练。
+- 2026-11-10（13:00，容器内性能实测完成）：
+  - **拓扑**：`postgres:16.4-alpine` + 本次构建的 `exam-api`（`WEB_CONCURRENCY=8 / DB_POOL_SIZE=5 / DB_MAX_OVERFLOW=5`），k6 v0.49.0 拷入 api 容器、以 loopback 打 `127.0.0.1:8000`（不经宿主端口代理），100 写 + 100 读 VU / 3min。
+  - **结果（与 native-20261110-0925 同负载对比）**：`session_read` p95 **14.2ms**、保存 p95 **199.7ms**、失败率 0.09%，均达标；`answer_save` p95 **428ms 超标**，超标部分集中在开场 100 并发建会话（p99 593ms）。读路径比原生 Windows 好一个量级。
+  - **归因确认（诊断）**：同容器仅 `synchronous_commit=off` → `answer_save` p95 **252ms ✅**、read 21.9ms ✅、失败率 0 ✅。→ 唯一超标项就是 **WAL fsync 串行**。
+  - **边界**：Docker Desktop 的 VM 磁盘仍是 Windows NTFS 上的 VHDX，因此容器也不代表真实 Linux SSD；本机（原生 + 容器）都复现同一写尾，**不能在本机销项**。
+  - **销项路径（已具备）**：CI 手动 `perf` job（compose 起 postgres+api、造数、k6 阈值判定、artifact）→ 推送到 GitHub 后 Actions 手动 Run 一次，真实 ubuntu/SSD 上应通过。
+  - **G4 状态不变**（CONDITIONAL）：剩余 = Linux/SSD 的 perf 销项 + staging 部署回滚演练 + CI 三 job 首跑。

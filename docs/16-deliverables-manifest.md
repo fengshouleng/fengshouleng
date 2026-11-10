@@ -56,7 +56,7 @@
 | 契约测试 | `tests/contract/`（含 AC 矩阵、错误码、OpenAPI 结构） | ✅ 55 passed / 0 xfail |
 | 安全负例 | `tests/security/`（矩阵逐行、CSRF、IDOR、注入/XSS） | ✅ 134 tests / 0 failed（1 skip + 1 xfail） |
 | E2E | `tests/e2e/`（Playwright Python，4 条主链路） | ✅ 5 UI passed（5 skip=旧 API 骨架，1 xfail） |
-| 性能 | `tests/perf/`（k6 100 写 + 100 读 VU，P95<300ms / 失败率<0.1% 阈值）、[docs/75](75-perf-baseline.md) 复现手册 | 🟡 原生 PG 复测 6 组完成：12 worker + 快提交时**全门槛 PASS**（save 217ms / read 34ms / 失败率 0）；fsync=on 时写尾 300–590ms，需 Linux/SSD 复核（`docs/61 §10.2.2`） |
+| 性能 | `tests/perf/`（k6 100 写 + 100 读 VU，P95<300ms / 失败率<0.1% 阈值）、[docs/75](75-perf-baseline.md) 复现手册、CI 手动 `perf` job | 🟡 容器内（fsync=on, 8 worker）实测：read p95 **14.2ms** ✅、保存 p95 **199.7ms** ✅、失败率 0.09% ✅，仅开场 burst `answer_save` p95 428ms ❌；`sync=off` 诊断 252ms ✅ 证明为 WAL fsync 串行 → **需真实 Linux/SSD runner 销项**（`docs/61 §10.2.7`） |
 | 前端单测 | `web/tests/`（client/login/questions/papers/exam/result/exams/admin） | ✅ 91 passed (8 files) |
 | 后端单测 | `server/tests/`（164 例） | ✅ 164 passed / 0 failed |
 

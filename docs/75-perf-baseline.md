@@ -3,18 +3,20 @@
 > 目的：在没有可用 Docker 的环境（本机 Windows）复现「100 写 + 100 读 VU，P95 < 300ms、失败率 < 0.1%」这条 G4 门槛，
 > 并把「应用容量」与「环境/存储」两个变量分开测量。结论与实测矩阵见 `docs/61-gate-report.md §10.2`。
 
-## 0. 结论速览（参考机：Windows 11 / i5-13600KF 20 逻辑核 / 原生 PG 16.4 / k6 同机）
+## 0. 结论速览（参考机：Windows 11 / i5-13600KF 20 逻辑核）
 
 | 部署 | 读 P95 | 写/开场 P95 | 是否达标 |
 |---|---|---|---|
-| 1 uvicorn worker（镜像默认） | 596ms | 20.9s | ❌ |
-| 4 worker，pg fsync=on | 82ms | 589ms | ❌（写尾） |
-| 12 worker，pg fsync=on | 38ms | 523ms | ❌（写尾，差 1ms） |
-| **12 worker，pg `synchronous_commit=off`** | **34ms** | **217ms** | ✅ 全门槛 |
+| 原生 PG，1 uvicorn worker（镜像默认） | 596ms | 20.9s | ❌ |
+| 原生 PG，4 worker，fsync=on | 82ms | 589ms | ❌（写尾） |
+| 原生 PG，12 worker，fsync=on | 38ms | 523ms | ❌（写尾，差 1ms） |
+| 原生 PG，12 worker，`synchronous_commit=off` | 34ms | 217ms | ✅（仅诊断用） |
+| **容器（Docker Desktop）+ 8 worker，fsync=on，k6 在容器内** | **14.2ms** | **428ms**（save-only 200ms） | ❌（仅开场 burst 超标） |
 
-- **读路径**是应用容量问题：worker 数决定（本机 4 worker 即达标）。
-- **写/开场尾延迟**由 PostgreSQL 提交落盘（WAL fsync）主导：本机 NTFS 上 100 并发建会话的 COMMIT 串行到 300–900ms；
-  把提交改成异步后同类负载 p95 降到 217ms。**生产必须保持 fsync=on**，因此这一步要在 Linux/SSD 上复核后才能销项。
+- **读路径**是应用容量问题：worker 数决定（本机 4 worker 即达标；容器内 8 worker 读 P95 14ms）。
+- **写/开场尾延迟**由 PostgreSQL 提交落盘（WAL fsync）主导：本机原生（NTFS）与 Docker Desktop 容器（VM 磁盘仍是 Windows NTFS 上的 VHDX）**都**出现 300–900ms 的开场 COMMIT 串行；
+  把提交改成异步后同类负载 p95 降到 217ms（诊断）。**生产必须保持 fsync=on，因此必须在真实 Linux/SSD 上复核**（CI `perf` job 或 §6 命令）。
+- 端口代理不是瓶颈（Docker 修复后实测宿主 50 并发连接 50/50 成功）；容器内压测建议把 k6 放进容器网络（见 §6）。
 
 ## 1. 前置条件
 
