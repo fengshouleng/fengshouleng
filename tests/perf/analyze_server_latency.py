@@ -55,6 +55,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("logs", type=Path)
     parser.add_argument("--json", type=Path, default=None)
+    parser.add_argument(
+        "--skip-seconds",
+        type=float,
+        default=0.0,
+        help="跳过开头 N 秒的样本（压测 warm-up 窗口对照用），默认 0=全量",
+    )
     args = parser.parse_args()
 
     samples: dict[str, list[float]] = defaultdict(list)
@@ -91,22 +97,33 @@ def main() -> int:
 
     base = min(moments) if moments else 0.0
     for moment, family, latency in records:
+        if moment - base < args.skip_seconds:
+            continue
         bucket = int((moment - base) // BUCKET_SECONDS)
         if family == "save":
             save_buckets[bucket].append(latency)
         elif family == "read":
             read_buckets[bucket].append(latency)
+    if args.skip_seconds:
+        # 跳过 warm-up 窗口后，族统计也要用窗口内的样本重算（不是只影响桶视图）
+        samples = defaultdict(list)
+        for moment, family, latency in records:
+            if moment - base >= args.skip_seconds:
+                samples[family].append(latency)
 
     report: dict[str, object] = {
         "source": str(args.logs),
         "access_lines": parsed,
         "malformed_lines": malformed,
+        "skip_seconds": args.skip_seconds,
         "status": dict(sorted(status_counts.items())),
         "families": {},
     }
     print("=" * 82)
     print(f"来源: {args.logs}")
     print(f"access 行数: {parsed}  无法解析: {malformed}")
+    if args.skip_seconds:
+        print(f"已跳过开头 {args.skip_seconds:g}s（warm-up 窗口）")
     print(f"状态码分布: {dict(sorted(status_counts.items()))}")
     print("=" * 82)
     print(f"{'族':<8}{'count':>8}{'p50':>10}{'p90':>10}{'p95':>10}{'p99':>10}{'max':>10}")

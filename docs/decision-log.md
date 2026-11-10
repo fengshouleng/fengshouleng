@@ -175,3 +175,10 @@
     ③ perf 覆盖文件放宽 PG `max_connections=200`、CI 池改 15+15（4×30=120）；perf job 新增「确认启动预热已生效」门（没有 warmup 行直接失败，杜绝「改了没生效」的假绿）。
   - **验证**：本机原生 PG（2 worker/池 4+4/9 份冻结试卷）预热输出 `pool_connections=8, papers=9, questions=900`，`pg_stat_activity`=10；探针 GET p50 5.3ms、PUT p50 5.1ms 无回归；ruff/mypy 绿、**pytest 172 passed**（新增 8 条缓存/预热用例）。
   - **G4**：仍为 CONDITIONAL，等 perf job 复跑结果；若预热后写侧 p95 仍 >300ms，则维持「≥8 vCPU 或 R0/QA 拆分 burst/稳态」的结论。
+- 2026-11-11（01:40–01:55，复跑 perf job：预热 + 快照缓存效果验证）：
+  - **run `42863847703`（`11a1886`，4 vCPU / 4 worker）**：backend/frontend/contract 全绿；perf 仍红，但数字大幅改善：
+    `read_p95` **37.5→19.8ms**（−47%）、`save_p95` **1006→538ms**（−46%）、`session_start_duration` p95 **1176→796ms**（−32%）、`submit` p95 264ms、失败率 **0**。
+  - **服务端侧拆解**：save p50/p95 = 70.8/529.6ms（原 110.3/1026.5）、read 7.3/21.1ms（原 10.5/38.5）。启动预热日志确认 4 个 worker 各 `pool_connections=30`（共 120，与 15+15 配置一致），冷建连接已移出压测窗口。
+  - **决定性发现**：跳过开头 40s（warm-up 窗口）后，服务端 **save p95 = 264.6ms ✅、read p95 = 18.8ms ✅** → **稳态已达标**；唯一剩下的红是「第一波保存 p50 470ms + 同秒 100 个开考建会话 p95 796ms」被混进同一个 `save_p95`。
+  - **产出**：`docs/76-perf-gate-scope-proposal.md` 草案（R1/R2/R3 三档口径 + 真实数值；**未改任何阈值/任务卡**，待 R0+QA 评审）；`docs/61 §10.4.5` 记录复跑对比。
+  - **G4**：仍 CONDITIONAL。收敛只剩两条路：① ≥8 vCPU runner 复跑（按核数近似线性，第一波 470→预计 230ms 左右）；② R0/QA 批准拆分「开场/首波 burst」与「稳态读写」。**不自行调阈值。**

@@ -367,6 +367,7 @@ CI 侧的 p50 变化证明优化有效：**start 310→166ms、save 99→32ms、
 | `42857195723` | workflow_dispatch | failure | 第二轮优化（合并查询/跳过空 answers）：p50 start 166ms / save 32ms / read 5.1ms；80 次 pool timeout 拖垮 p95 |
 | `42858654549` | push | success | 池 12+12 提交的 push run |
 | `42859094367` | workflow_dispatch | failure | 池 12+12：无 timeout，read 37.5ms ✅、save p95 1006ms、start p95 1176ms（4 vCPU 方差） |
+| `42863847703` | workflow_dispatch | failure | **启动预热 + 冻结快照缓存**（`11a1886`）：backend/frontend/contract 全绿；read p95 **19.8ms ✅**、save p95 538ms（−46%）、start p95 796ms（−32%）、失败率 0；跳过 warm-up 窗口后服务端 save p95 **264.6ms ✅** → 仅剩开场/首波 burst（见 §10.4.5） |
 
 > 全部 run 均在 `https://github.com/fengshouleng/fengshouleng/actions`；artifacts：perf job 上传 `reports/perf/**`（k6 日志 + summary.json + 失败时容器日志）。
 
@@ -446,5 +447,50 @@ probe: GET /sessions/{id} p50 5.3ms、PUT /sessions/{id}/answers p50 5.1ms（无
 回归验证：`ruff` 全绿、`mypy app` 62 文件通过、`pytest` **172 passed**（新增
 `server/tests/sessions/test_snapshot_cache.py` 8 条，覆盖「缓存命中 / 失效 / 跨库隔离 /
 reset_engine 清理 / 预热三种降级路径」）。
+
+#### 10.4.5 复跑结果（run `42863847703`，commit `11a1886`，同为 4 vCPU / 4 worker）
+
+| 指标（k6 口径） | 修复前 `42859094367` | 修复后 `42863847703` | 变化 |
+|---|---|---|---|
+| `save_p95` p50 | —（未单记） | **66.2ms** | — |
+| `save_p95` p95 | 1006ms | **538.4ms** | **−46%** |
+| `read_p95` p95 | 37.5ms | **19.8ms** | **−47%** |
+| `session_start_duration` p50 / p95 | —/ 1176ms | **470.5 / 796.5ms** | **−32%** |
+| `submit_duration` p95 | — | 263.6ms | — |
+| `http_req_failed` | 0 | **0** | — |
+| `answer_save` 场景 p95 | 1115ms | 613.2ms | −45% |
+
+服务端侧（同一份日志重建，`tests/perf/analyze_server_latency.py`）：
+
+| 族 | 修复前 p50 / p95 | 修复后 p50 / p95 |
+|---|---|---|
+| save | 110.3 / 1026.5ms | **70.8 / 529.6ms** |
+| read | 10.5 / 38.5ms | **7.3 / 21.1ms** |
+| start | 754.6 / 1044.3ms | **506.6 / 755.3ms** |
+
+各波保存（每 30s 一波 100 并发，修复后）：
+
+| 时间桶 | count | p50 | p95 |
+|---|---|---|---|
+| t≈20s（**第一波**） | 100 | **470.4ms** | 595.9ms |
+| t≈50s | 100 | 104.2ms | **282.7ms** |
+| t≈80s | 100 | 89.7ms | **293.1ms** |
+| t≈110s | 100 | 41.4ms | 95.4ms |
+| t≈140s | 100 | 34.0ms | 83.6ms |
+| t≈170s | 80 | 79.3ms | 283.4ms |
+
+**关键结论（决定下一步该做什么）**：跳过开头 40s（warm-up 窗口）后，服务端侧
+**save p95 = 264.6ms ✅、read p95 = 18.8ms ✅**——**稳态已经达标**。仍然判红的唯一原因是
+**第一波保存（470ms p50）+ 同秒 100 个开考建会话（p95 755–796ms）**被混进同一个
+`save_p95` / `answer_save` 数字里；第一波又与「开考瞬间 100 个会话创建 + 读 VU 起量 +
+prepare_data 之后 PG 的首次检查点」叠在同一秒。
+
+> 注：预热在 CI 上 `papers=0/questions=0` 属预期——perf job 先起 api（空库）再造数；
+> 但**连接池 30/worker（4 worker 共 120）已按预期填满**，冷建连接成本已从压测窗口移除。
+
+因此 G4 性能项还剩两种收敛方式，都需要决策而不能靠改代码绕过（详见 `docs/76` 草案）：
+1. **≥8 vCPU runner** 重跑 `perf` job（第一波与开场 burst 的 CPU 争用按核数近似线性改善）；
+2. **R0/QA 批准把「开场/首波 burst」与「稳态读写」分开度量**（草案 `docs/76-perf-gate-scope-proposal.md`，
+   未改任何阈值与任务卡）。
 
 
