@@ -27,11 +27,13 @@ web/coverage/
 !**/.env.example
 
 # 运行与证据产物
-reports/
+# 注意：必须是根目录锚定 `/reports/`——裸 `reports/` 会把 `server/app/reports/`（后端报
+# 表模块）一起忽略，导致 CI clone 后 mypy 报 app.reports 找不到（2026-11-10 实测）。
+/reports/
 deploy/evidence/*
 !deploy/evidence/README.md
 deploy/release/.state/
-.run/
+/.run/
 *.log
 
 # IDE / OS

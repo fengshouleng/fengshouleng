@@ -65,6 +65,7 @@ docker compose version     #
 | `DEF-002` | G4/发布 | `P1` | `staging_drill.sh` 失败时 JSON/终端仍打印 `result=PASS`（finalize 缺 FAIL 分支 + 回滚 0s 判失败） | `fixed` | 2026-11-10 演练日志 `reports/release/20261110-1300/staging-drill3.log`；修复 `deploy/release/staging_drill.sh` | R0 |
 | `DEF-003` | G4/发布 | `P2` | `smoke.sh` 冒烟题干固定，二次执行因题库唯一约束返回 409，破坏演练可重复性 | `fixed` | `reports/release/20261110-1300/staging-drill4.log`（step 4/6 409）；修复为带时间戳后缀 | R0 |
 | `DEF-004` | 环境 | `P2` | Windows Git-bash 下 `/bin/sh`、`/backup/*.sh` 参数被 MSYS 路径转换，容器 `exec` 报 `C:/Program Files/Git/usr/bin/sh` 不存在 | `fixed`（运行约定） | `reports/release/20261110-1300/staging-drill.log`；执行时设 `MSYS2_ARG_CONV_EXCL="/bin/sh;/backup"`（已写入 `docs/70 §14.2`） | R0 |
+| `DEF-005` | G4/CI | `P1` | `changes` job 在「首次 push / `workflow_dispatch`」时用 `HEAD~1` 兜底，只 diff 最后一个提交 → backend/frontend/contract 全部 `skipped`，而 `ci-gate` 仍判 **success**（假绿） | `fixed` | 首次 CI run `42841073643`（push：三 job skipped、ci-gate success）；修复后由 push `f99195e` 起全量运行 | R0 |
 
 **放行规则**：P0/P1 缺陷数必须为 0；P2 允许存在但需写明规避方案与修复版本。
 
