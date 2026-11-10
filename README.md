@@ -15,7 +15,8 @@
 | G1 范围冻结 | ✅ 放行（采用默认假设 A1–A4） | 见 `docs/01-scope-freeze.md`；变更走 ADR |
 | G2 契约冻结 | ✅ v1.0.3（机器门通过） | 22+9+4 条缺陷/一致性问题全处置；`openapi-spec-validator` → OK；contract 55 passed / 0 xfail |
 | 卡进度 | ✅ 完成 | 26 张任务卡 + 6 轮契约/测试同步全部完成 |
-| 自动化验证 | ✅ G3 通过；🟡 G4 条件通过 | contract 55 / backend **164** / frontend **91** 全绿；security **134**（0 failed）/ E2E **5 UI 链路** / 备份恢复 **PASS** / compose config OK。**性能：原生 PG 复测完成，根因=单 worker 容量 + 日志锁放大 + 本机 NTFS 提交 fsync；12 worker + 快提交时全门槛 PASS，fsync=on 的 Linux/SSD 待复核**（`docs/61 §10.2`、`docs/75`）；staging 回滚演练与 CI 首跑未做 |
+| 自动化验证 | ✅ G3 通过；🟡 G4 条件通过 | contract 55 / backend **164** / frontend **91** 全绿；security **134**（0 failed）/ E2E **5 UI 链路** / 备份恢复 **PASS** / compose config OK（Docker 29.9.3 已恢复）。**性能：原生 PG 复测 6 组完成，根因=单 worker 容量 + 日志锁放大 + 本机 NTFS 提交 fsync；12 worker + 快提交时全门槛 PASS，fsync=on 的 Linux/容器复测进行中**（`docs/61 §10.2`、`docs/75`）；CI 已加手动 `perf` job；staging 回滚演练未做 |
+| 代码入库 | ✅ 已初始化 | Git 2.56；`.gitattributes` 统一换行（sh/py/yml=LF，ps1/cmd=CRLF）；初始提交 `d28d652`，工作区干净 |
 
 ## 目录结构
 
