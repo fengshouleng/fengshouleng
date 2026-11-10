@@ -377,12 +377,13 @@ jobs:
           RUN_MIGRATIONS=true
           API_PREFIX=/api
           FORWARDED_ALLOW_IPS=*
-          # 2026-11-11 结论：4 vCPU runner 上 4 worker 是最优（8 worker 反而更差：
-          # 开场建会话 p95 711ms→1409ms、save 349→665，CPU 过订阅）。
-          # 4 worker 池 5+5 => 4×10=40 < PG 100。
+          # 2026-11-11 结论：4 vCPU runner 上 4 worker 最优（8 worker 过订阅，更差）。
+          # 池必须够大：优化后 start p50 从 310ms 降到 166ms，并发压力反而更大，
+          # 池 5+5（每 worker 10）在 run 42857195723 上触发 80 次 QueuePool timeout(10s)。
+          # 4 worker × (12+12) = 96 < postgres 默认 max_connections=100。
           WEB_CONCURRENCY=4
-          DB_POOL_SIZE=5
-          DB_MAX_OVERFLOW=5
+          DB_POOL_SIZE=12
+          DB_MAX_OVERFLOW=12
           EOF
 
       - name: 启动 postgres + api（构建镜像，api 发布 18000）
