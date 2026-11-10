@@ -89,7 +89,9 @@ def start_or_resume_session(
         user_agent=audit.request_user_agent(request),
         now=moment,
     )
-    state = service.build_session_state(db, session, exam=exam, now=moment)
+    state = service.build_session_state(
+        db, session, exam=exam, now=moment, load_answers=not created
+    )
     # 性能（2026-11-11）：直接返回 pydantic 序列化结果，跳过 FastAPI 对 100 题
     # 大对象再做一次 response_model 校验/编码（输出与默认路径逐字节一致，已实测）。
     # 开场 100 并发建会话是该接口的 p95 主要来源（docs/61 §10.2.8）。

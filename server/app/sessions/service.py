@@ -98,6 +98,26 @@ def _owned_session(db: Session, session_id: int, student: User, *, lock: bool) -
     return session
 
 
+def _owned_session_and_exam(
+    db: Session,
+    session_id: int,
+    student: User,
+) -> tuple[ExamSession, Exam]:
+    """读取路径专用：会话 + 所属考试一条 join 取回（少一次 DB 往返，行为同
+    `_owned_session(lock=False)` + `_exam_of`；读路径不加行锁）。"""
+    row = db.execute(
+        select(ExamSession, Exam)
+        .join(Exam, Exam.id == ExamSession.exam_id)
+        .where(ExamSession.id == session_id)
+    ).first()
+    if row is None:
+        raise errors.not_found("会话不存在")
+    session, exam = row[0], row[1]
+    if session.student_id != student.id:
+        raise errors.forbidden("无权访问他人的会话")
+    return session, exam
+
+
 # --------------------------------------------------------------------------- #
 # 自动交卷（到期 / 交卷共用同一判分路径）
 # --------------------------------------------------------------------------- #
@@ -202,6 +222,11 @@ _QUESTIONS_CACHE: OrderedDict[
 _QUESTIONS_CACHE_MAX = 32
 
 
+def clear_sessions_cache() -> None:
+    """清空会话层缓存（冻结题面视图）；测试切换数据库时由 db.reset_engine 调用。"""
+    _QUESTIONS_CACHE.clear()
+
+
 def _build_questions(
     db: Session,
     exam: Exam,
@@ -255,14 +280,23 @@ def build_session_state(
     *,
     exam: Exam,
     now: datetime,
+    load_answers: bool = True,
 ) -> SessionState:
-    """组装 SessionState：题目（不含答案、可乱序）+ 已保存答案 + 校时字段。"""
+    """组装 SessionState：题目（不含答案、可乱序）+ 已保存答案 + 校时字段。
+
+    `load_answers=False` 用于「刚新建的会话」——此时必然还没有任何作答行，
+    可省掉一次 answers 查询（开场 100 并发建会话的热点路径，docs/61 §10.2.9）。
+    """
     questions = _questions_for(db, exam, session_id=session.id)
-    rows = db.scalars(
-        select(Answer)
-        .where(Answer.session_id == session.id)
-        .order_by(Answer.question_id)
-    ).all()
+    rows = (
+        db.scalars(
+            select(Answer)
+            .where(Answer.session_id == session.id)
+            .order_by(Answer.question_id)
+        ).all()
+        if load_answers
+        else ()
+    )
     return SessionState(
         id=session.id,
         exam_id=session.exam_id,
@@ -295,17 +329,25 @@ def start_or_resume_session(
 ) -> tuple[ExamSession, Exam, bool]:
     """开始或恢复本场考试；返回 `(session, exam, created)`，created=False 表示恢复。"""
     moment = _now(now)
-    exam = db.get(Exam, exam_id)
+    # 性能（2026-11-11）：exam + 本人会话用一条 outer join 查询取回（少 1 次 DB 往返），
+    # 该接口是「100 名学生同秒开考」的热点（docs/61 §10.2.9）。
+    row = db.execute(
+        select(Exam, ExamSession)
+        .outerjoin(
+            ExamSession,
+            and_(
+                ExamSession.exam_id == Exam.id,
+                ExamSession.student_id == student.id,
+            ),
+        )
+        .where(Exam.id == exam_id)
+    ).first()
+    exam: Exam | None = row[0] if row is not None else None
     if exam is None or exam.status == ExamStatus.DRAFT.value:
         # 防枚举：不存在与不可见（draft）统一 404（C-17 / C-22）
         raise errors.not_found("考试不存在")
 
-    existing = db.scalar(
-        select(ExamSession).where(
-            ExamSession.exam_id == exam.id,
-            ExamSession.student_id == student.id,
-        )
-    )
+    existing: ExamSession | None = row[1] if row is not None else None
     if existing is not None:
         # 恢复：不重算 deadline；已到期则先结算为 expired 再返回（C-01/C-15）
         if _expire_if_needed(db, existing, exam, moment, ip, user_agent):
@@ -375,8 +417,7 @@ def get_session_state(
 ) -> tuple[ExamSession, Exam]:
     """读取会话（唯一恢复入口）：到期时同步自动交卷判分后返回 expired。"""
     moment = _now(now)
-    session = _owned_session(db, session_id, student, lock=False)
-    exam = _exam_of(db, session)
+    session, exam = _owned_session_and_exam(db, session_id, student)
     if _expire_if_needed(db, session, exam, moment, ip, user_agent):
         db.commit()
     return session, exam
