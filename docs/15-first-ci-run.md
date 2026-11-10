@@ -3,6 +3,10 @@
 > 目的：把「本机 shell 不可用（RISK-08）」下的静态结论，转成 CI 的真实证据。
 > 这是 G3 从 PARTIAL 升级为 PASS、G4 开始计数之前的唯一路径。
 > 相关：`.github/workflows/ci.yml`、`.github/workflows/README.md`、`docs/61-gate-report.md`
+>
+> **2026-11-10 更新**：本机已恢复（Docker 29.9.3 + Git 2.56 + Node/Python venv），
+> 仓库已 `git init -b main` 并提交 6 次；`actionlint 1.7.7` 对 `ci.yml` 校验 **exit 0**；
+> backend/contract/frontend 的 CI 等价命令已在本地真实跑绿。**当前阻塞只剩：创建 GitHub 远端并推送。**
 
 ## 1. 前置条件
 
@@ -15,16 +19,14 @@
 ```bash
 cd "选择题答题系统"
 
-git init -b main
-git add -A
-git commit -m "chore: W0 baseline + CI + backend/frontend vertical slices"
-
+# 仓库已初始化（main 分支，含 .gitattributes：sh/py/yml=LF、ps1/cmd=CRLF）
 git remote add origin <你的仓库地址>
 git push -u origin main
 ```
 
-> `.gitignore` 已就位（Python/Node 产物、.env、reports、deploy/evidence 除外）。
-> 注意：`web/pnpm-lock.yaml` 仍缺失（P-004），CI 会自动退化 `--no-frozen-lockfile` 并打 notice。
+> 本地已有 6 次提交，`git status` 干净；`.env.staging`、`reports/`、`deploy/evidence/`、
+> `deploy/release/.state/` 均被忽略。
+> 注意：`web/pnpm-lock.yaml` 若仍缺失（P-004），CI 会自动退化 `--no-frozen-lockfile` 并打 notice。
 
 ## 3. 分支保护（P-005）
 
@@ -39,10 +41,11 @@ git push -u origin main
 | Job | 命令 | 预期 |
 |---|---|---|
 | `changes` | git diff 变更集 | 首次 push 无 before sha → 全量兜底，三个 job 都跑 |
-| `backend` | `pip install -e ".[dev]"` → ruff → mypy → pytest | 通过（若失败，优先看第一个失败用例，不要一次修多个） |
-| `frontend` | `pnpm install` → lint → tsc → test → build | 通过（首次无锁文件，install 时间较长） |
-| `contract` | `openapi-spec-validator` → `pytest tests/contract` | 通过；这是 V1.0.2 的机器门 |
-| `ci-gate` | 汇总 | 全绿才显示 success |
+| `backend` | `pip install -e ".[dev]"` → ruff → mypy → pytest | 通过（本地已 164 passed） |
+| `frontend` | `pnpm install` → lint → tsc → test → build | 通过（本地已 91 tests passed） |
+| `contract` | `openapi-spec-validator` → `pytest tests/contract` | 通过（本地已 55 passed / 0 xfail） |
+| `perf`（手动 Run workflow 才跑） | compose 起 postgres+api → 造数 → k6 100+100 VU | 目标 `answer_save`/`session_read` p95 <300ms；真实 ubuntu/SSD 上应通过（本机容器读 14ms/保存 200ms，仅开场 burst 428ms 是宿主存储 fsync 所致） |
+| `ci-gate` | 汇总 | 全绿才显示 success（`perf` 在 push/PR 中 skipped 属预期） |
 
 ## 5. 高概率首跑失败与处置（按概率排序）
 
@@ -65,5 +68,6 @@ git push -u origin main
 ## 7. 不能自动化、仍需人工的项
 
 - [ ] `ci-gate` 分支保护设置（P-005）
-- [ ] staging 恢复演练（REL-002 的 G4 证据，需要在有 docker 的环境执行 `deploy/backup/restore_drill.sh`）
+- [x] staging 部署→回滚演练（2026-11-10 **PASS**：deploy 17s / rollback 11s，`reports/release-drill-20261110T052821Z.json`）
+- [x] 备份恢复演练（DR-20261110-01，PASS，见 `docs/71`）
 - [ ] G4 后的生产上线审批（DSH approval = ask，脚本不自批）
