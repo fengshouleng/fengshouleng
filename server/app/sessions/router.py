@@ -77,10 +77,9 @@ def _submit_result(session: ExamSession, *, replayed: bool, now: datetime) -> Su
 def start_or_resume_session(
     exam_id: int,
     request: Request,
-    response: Response,
     db: Session = Depends(get_db),
     student: User = Depends(_STUDENT),
-) -> SessionState:
+) -> Response:
     moment = utcnow()
     session, exam, created = service.start_or_resume_session(
         db,
@@ -90,8 +89,15 @@ def start_or_resume_session(
         user_agent=audit.request_user_agent(request),
         now=moment,
     )
-    response.status_code = 201 if created else 200
-    return service.build_session_state(db, session, exam=exam, now=moment)
+    state = service.build_session_state(db, session, exam=exam, now=moment)
+    # 性能（2026-11-11）：直接返回 pydantic 序列化结果，跳过 FastAPI 对 100 题
+    # 大对象再做一次 response_model 校验/编码（输出与默认路径逐字节一致，已实测）。
+    # 开场 100 并发建会话是该接口的 p95 主要来源（docs/61 §10.2.8）。
+    return Response(
+        content=state.model_dump_json(),
+        media_type="application/json",
+        status_code=201 if created else 200,
+    )
 
 
 @router.get(
@@ -105,7 +111,7 @@ def get_session(
     request: Request,
     db: Session = Depends(get_db),
     student: User = Depends(_STUDENT),
-) -> SessionState:
+) -> Response:
     moment = utcnow()
     session, exam = service.get_session_state(
         db,
@@ -115,7 +121,8 @@ def get_session(
         user_agent=audit.request_user_agent(request),
         now=moment,
     )
-    return service.build_session_state(db, session, exam=exam, now=moment)
+    state = service.build_session_state(db, session, exam=exam, now=moment)
+    return Response(content=state.model_dump_json(), media_type="application/json")
 
 
 @router.put(

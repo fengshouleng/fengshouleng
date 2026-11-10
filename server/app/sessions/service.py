@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import random
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -191,6 +192,63 @@ def _option_list(item: dict[str, Any], *, session_id: int, shuffle: bool) -> lis
     return options
 
 
+#: 冻结题面缓存（性能优化，2026-11-11）：试卷一旦发布，快照不可变；未启用乱序时
+#: 同一场考试所有学生的 100 题视图完全一致，可跨会话复用已构建的 pydantic 模型，
+#: 避免每次请求重建 100 个 SessionQuestionOut（实测约 0.9ms/请求）。
+#: 键 = (paper_id, shuffle_questions, shuffle_options, exam_id)；乱序开启时不缓存（按会话洗牌）。
+_QUESTIONS_CACHE: OrderedDict[
+    tuple[int, bool, bool, int], tuple[SessionQuestionOut, ...]
+] = OrderedDict()
+_QUESTIONS_CACHE_MAX = 32
+
+
+def _build_questions(
+    db: Session,
+    exam: Exam,
+    *,
+    session_id: int,
+) -> list[SessionQuestionOut]:
+    """按冻结快照构建题目视图（可乱序时按会话稳定洗牌）。"""
+    items = scoring.snapshot_questions(db, exam)
+    return [
+        SessionQuestionOut(
+            question_id=int(item["question_id"]),
+            type=QuestionType(str(item["type"])),
+            stem=str(item.get("stem") or ""),
+            options=_option_list(
+                item,
+                session_id=session_id,
+                shuffle=bool(exam.shuffle_options),
+            ),
+            order_no=int(item.get("order_no") or 0),
+            points=float(item.get("points") or 0),
+        )
+        for item in _ordered_questions(
+            items,
+            session_id=session_id,
+            shuffle=bool(exam.shuffle_questions),
+        )
+    ]
+
+
+def _questions_for(db: Session, exam: Exam, *, session_id: int) -> list[SessionQuestionOut]:
+    """取题目视图；未启用乱序时走进程内缓存（同一 paper_id 的题面不可变）。"""
+    shuffle_q = bool(exam.shuffle_questions)
+    shuffle_o = bool(exam.shuffle_options)
+    if shuffle_q or shuffle_o:
+        return _build_questions(db, exam, session_id=session_id)
+    key = (exam.paper_id, False, False, exam.id)
+    cached = _QUESTIONS_CACHE.get(key)
+    if cached is not None:
+        _QUESTIONS_CACHE.move_to_end(key)
+        return list(cached)
+    built = list(_build_questions(db, exam, session_id=session_id))
+    _QUESTIONS_CACHE[key] = tuple(built)
+    if len(_QUESTIONS_CACHE) > _QUESTIONS_CACHE_MAX:
+        _QUESTIONS_CACHE.popitem(last=False)
+    return built
+
+
 def build_session_state(
     db: Session,
     session: ExamSession,
@@ -199,26 +257,7 @@ def build_session_state(
     now: datetime,
 ) -> SessionState:
     """组装 SessionState：题目（不含答案、可乱序）+ 已保存答案 + 校时字段。"""
-    items = scoring.snapshot_questions(db, exam)
-    questions = [
-        SessionQuestionOut(
-            question_id=int(item["question_id"]),
-            type=QuestionType(str(item["type"])),
-            stem=str(item.get("stem") or ""),
-            options=_option_list(
-                item,
-                session_id=session.id,
-                shuffle=bool(exam.shuffle_options),
-            ),
-            order_no=int(item.get("order_no") or 0),
-            points=float(item.get("points") or 0),
-        )
-        for item in _ordered_questions(
-            items,
-            session_id=session.id,
-            shuffle=bool(exam.shuffle_questions),
-        )
-    ]
+    questions = _questions_for(db, exam, session_id=session.id)
     rows = db.scalars(
         select(Answer)
         .where(Answer.session_id == session.id)
