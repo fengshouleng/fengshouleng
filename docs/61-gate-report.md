@@ -192,16 +192,16 @@ docker compose version     #
 | 备份 | ✅ dump 33900 bytes、TOC 90、sha256 校验通过 | `reports/drill-backups/exam_20261109T175350Z.dump` |
 | 恢复演练 | ✅ **PASS**：restore 0s（<1800s）；行数 users 4/4、questions 3/3、papers 1/1、exams 0/0、exam_sessions 0/0；临时库已删 | `reports/drill-backups/drill-logs/backup-20261109.log` |
 | compose config | ✅ exit 0（`--env-file deploy/.env.example`） | 本次执行 |
-| 性能冒烟（k6 100 写 + 100 读 VU / 3m） | ⚠️ **原生 PG 复测：应用侧容量问题已定位并修复配置**；12 worker + 快提交（`synchronous_commit=off`）下**全门槛 PASS**（save p95 217ms / save-only 67ms / read p95 34ms / 失败率 0）；fsync=on 时 save p95 300–520ms 仍未过，见 §10.2 | `reports/perf/native-*/summary.json`、`docs/75-perf-baseline.md` |
+| 性能冒烟（k6 100 写 + 100 读 VU / 3m） | ⚠️ **原生 PG 6 组 + 容器内 1 组实测完成**：容器（8 worker、fsync=on、k6 in-container）read p95 **14.2ms ✅**、保存 p95 **199.7ms ✅**、失败率 0.09% ✅，仅开场 burst `answer_save` p95 **428ms ❌**；`sync=off` 诊断 252ms 证明为 WAL fsync 串行 → 需真实 Linux/SSD 销项（§10.2.7） | `reports/perf/native-*/summary.json`、`reports/perf/docker-container-*/summary.json`、`docs/75-perf-baseline.md` |
 
 **期间修复（测试缺陷，非实现缺陷）**：`test_audit_system_record_has_null_actor_and_dash_ip` 曾把 `auth.login_failed`（`actor_id=None` 但 ip 为真实地址）误当系统记录，导致偶发失败；已改为只筛 `action=user.create` 且 `actor_id=None` 的记录。
 
 **G4 仍缺（环境型，非代码问题）**：
-1. 性能最终确认（原生 PG 复测已完成并定位到「单 worker 容量 + 本机 NTFS 提交落盘」两因素；修复项已合入部署配置。**fsync=on 的 Linux/SSD 环境尚未实测**，需在 Linux 或 CI runner 用 `docs/75-perf-baseline.md` 复现门槛）；
-2. staging 部署→回滚演练（脚本为 bash + docker compose；本机 Windows 缺 git/bash，且 **Docker Desktop/WSL 在压测后已损坏**，建议在 CI/Linux runner 执行）；
-3. CI 三 job 首跑（本机未安装 git，需推送到 GitHub 后观察）。
+1. 性能最终确认（原生 PG + 容器内共 8 组实测已完成，容量与 fsync 归因清晰；**真实 Linux/SSD runner 上尚未跑**——本机原生 NTFS 与 Docker Desktop 的 VHDX 都落在 Windows NTFS，无法代表线上存储。CI 已备好手动 `perf` job，推送后 Run workflow 即可销项）；
+2. staging 部署→回滚演练（脚本为 bash + docker compose；本机已有 Docker + Git bash，正在构建 web/nginx 镜像后尝试本地演练，失败则转 CI/Linux runner）；
+3. CI 三 job 首跑（git 已装、仓库已初始化并提交 4 次，需推送到 GitHub 远端后观察）。
 
-**结论**：功能、契约、安全、E2E、备份恢复、compose 配置均有真实运行证据；**性能问题已完成分层定位并修复部署配置（多 worker + 池摊分），参考机 12 worker + 快提交时全门槛 PASS**；fsync=on 时的写尾延迟需 Linux/SSD 复核；staging 部署回滚演练未执行。G4 = **CONDITIONAL（性能 Linux 复核 + staging 演练）**。
+**结论**：功能、契约、安全、E2E、备份恢复、compose 配置均有真实运行证据；**性能已完成 8 组实测与修复（多 worker + 池摊分），读/保存达标，开场 burst 受宿主存储 flush 限制，需在真实 Linux/SSD 销项**；staging 部署回滚演练进行中。G4 = **CONDITIONAL（性能 Linux 销项 + staging 演练 + CI 首跑）**。
 
 ### 10.2 PERF-001 性能缺陷记录（G4 阻断项）— 2026-11-10 原生 PG 复测与修复
 
