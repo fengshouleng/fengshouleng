@@ -377,7 +377,9 @@ jobs:
           RUN_MIGRATIONS=true
           API_PREFIX=/api
           FORWARDED_ALLOW_IPS=*
-          WEB_CONCURRENCY=8
+          # GitHub 托管 runner 为 4 vCPU：worker 数按核数配（8 会与 PG/k6 抢核，
+          # 2026-11-10 首跑实测 session_start p95 1.8s）；每 worker 池 5+5 => 4×10=40 < PG 100
+          WEB_CONCURRENCY=4
           DB_POOL_SIZE=5
           DB_MAX_OVERFLOW=5
           EOF
@@ -430,7 +432,17 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          mkdir -p "${PERF_REPORT_DIR}"
           k6 run tests/perf/k6/exam_flow.js 2>&1 | tee reports/perf/k6-ci.log
+
+      - name: 失败时抓取容器日志（排障）
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p reports/perf/ci
+          docker compose ${COMPOSE_ARGS} ps > reports/perf/ci/compose-ps.txt 2>&1 || true
+          docker compose ${COMPOSE_ARGS} logs --no-color api postgres > reports/perf/ci/compose-logs.txt 2>&1 || true
+          echo "::notice::容器日志已写入 reports/perf/ci/compose-logs.txt（随 artifact 上传）"
 
       - name: 归档 summary / 日志
         if: always()
@@ -438,8 +450,7 @@ jobs:
         with:
           name: perf-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            reports/perf/**/summary.json
-            reports/perf/k6-ci.log
+            reports/perf/**
           if-no-files-found: ignore
           retention-days: 14
 
