@@ -61,15 +61,25 @@ jobs:
 
           if [ "${EVENT_NAME}" = "pull_request" ]; then
             base="$(git merge-base "origin/${BASE_REF}" HEAD 2>/dev/null || true)"
+          elif [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            # 手动触发没有可靠 diff 基线：全量跑，否则会出现"手动 Run 却全部 skipped"的假绿
+            base=""
+            force_all=true
+            echo "::notice::手动触发（workflow_dispatch）→ 全量运行 backend/frontend/contract"
           else
             base="${BEFORE_SHA}"
-            # 新分支 / 强制推送 / 首次推送时 before 可能为全 0 或不存在
+            case "${base}" in
+              "" | 0000000000000000000000000000000000000000*) base="" ;;
+            esac
+            # 首次推送 / 新分支 / 强制推送时 before 为全 0 或不存在：全量兜底
             if [ -z "${base}" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-              base="$(git rev-parse HEAD~1 2>/dev/null || true)"
+              base=""
+              force_all=true
+              echo "::notice::before 不可用（首次推送/强制推送/新分支）→ 全量运行 backend/frontend/contract"
             fi
           fi
 
-          if [ -n "${base}" ]; then
+          if [ -n "${base}" ] && [ "${force_all}" != "true" ]; then
             files="$(git diff --name-only "${base}" HEAD 2>/dev/null || true)"
           fi
 
