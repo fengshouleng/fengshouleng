@@ -68,7 +68,7 @@
 | 备份/恢复 | `backup/*.sh`、`restore_drill.sh` | ✅ 备份 + 恢复演练 **PASS**（DR-20261110-01） |
 | 监控告警 | `monitoring/*.sh`、`docs/72` | ⚠️ dry-run 未执行（验证优先级低） |
 | 发布/回滚 | `release/deploy.sh`、`rollback.sh`、`staging_drill.sh` | ✅ **staging 部署→回滚演练 PASS**（部署 17s、回滚 11s、两次冒烟全过，`reports/release-drill-20261110T052821Z.json`）；演练暴露的 2 个脚本缺陷已修（DEF-002/003） |
-| CI | `.github/workflows/ci.yml`（含手动 `perf` job） | ⚠️ 未在远端运行（本地仓库已入库，待推送 GitHub 远端） |
+| CI | `.github/workflows/ci.yml`（含手动 `perf` job） | ✅ **CI 三 job 首跑全绿**（run `42848561341`：backend 76s / frontend 78s / contract 16s / ci-gate 4s）；⚠️ `perf` job 在 4 vCPU runner 未达门槛（容量问题，见 `docs/61 §10.2.8`） |
 
 ## 6. 诚实结论
 

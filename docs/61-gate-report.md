@@ -66,6 +66,9 @@ docker compose version     #
 | `DEF-003` | G4/发布 | `P2` | `smoke.sh` 冒烟题干固定，二次执行因题库唯一约束返回 409，破坏演练可重复性 | `fixed` | `reports/release/20261110-1300/staging-drill4.log`（step 4/6 409）；修复为带时间戳后缀 | R0 |
 | `DEF-004` | 环境 | `P2` | Windows Git-bash 下 `/bin/sh`、`/backup/*.sh` 参数被 MSYS 路径转换，容器 `exec` 报 `C:/Program Files/Git/usr/bin/sh` 不存在 | `fixed`（运行约定） | `reports/release/20261110-1300/staging-drill.log`；执行时设 `MSYS2_ARG_CONV_EXCL="/bin/sh;/backup"`（已写入 `docs/70 §14.2`） | R0 |
 | `DEF-005` | G4/CI | `P1` | `changes` job 在「首次 push / `workflow_dispatch`」时用 `HEAD~1` 兜底，只 diff 最后一个提交 → backend/frontend/contract 全部 `skipped`，而 `ci-gate` 仍判 **success**（假绿） | `fixed` | 首次 CI run `42841073643`（push：三 job skipped、ci-gate success）；修复后由 push `f99195e` 起全量运行 | R0 |
+| `DEF-006` | G4/CI | `P1` | `.gitignore` 的裸 `reports/` 把 `server/app/reports/`、`server/tests/reports/` 一并忽略 → CI clone 后 mypy 报 `app.reports` import-not-found（本地因文件在磁盘上而"假绿"） | `fixed` | CI run `42841208142` mypy 2 errors；改根锚定 `/reports/` 后 backend 三 job 全绿（run `42848561341`） | R0 |
+| `DEF-007` | G4/CI | `P2` | 前端 `admin.test.tsx` 在 CI 上元素 1381ms 才渲染，`findByTestId` 默认 1s 超时 → 偶发失败 | `fixed` | CI run `42841208142` frontend 失败；`web/tests/setup.ts` 加 `asyncUtilTimeout: 5000` | R0 |
+| `DEF-008` | G4/CI | `P2` | perf job 未创建 `PERF_REPORT_DIR`，k6 无法写 `summary.json`，artifact 只剩日志 | `fixed` | CI perf run `42847410502` 日志 `could not open reports/perf/ci/summary.json`；k6 前加 `mkdir -p` | R0 |
 
 **放行规则**：P0/P1 缺陷数必须为 0；P2 允许存在但需写明规避方案与修复版本。
 
@@ -196,17 +199,20 @@ docker compose version     #
 | 备份 | ✅ dump 33900 bytes、TOC 90、sha256 校验通过 | `reports/drill-backups/exam_20261109T175350Z.dump` |
 | 恢复演练 | ✅ **PASS**：restore 0s（<1800s）；行数 users 4/4、questions 3/3、papers 1/1、exams 0/0、exam_sessions 0/0；临时库已删 | `reports/drill-backups/drill-logs/backup-20261109.log` |
 | compose config | ✅ exit 0（`--env-file deploy/.env.example`） | 本次执行 |
-| 性能冒烟（k6 100 写 + 100 读 VU / 3m） | ⚠️ **原生 PG 6 组 + 容器内 1 组实测完成**：容器（8 worker、fsync=on、k6 in-container）read p95 **14.2ms ✅**、保存 p95 **199.7ms ✅**、失败率 0.09% ✅，仅开场 burst `answer_save` p95 **428ms ❌**；`sync=off` 诊断 252ms 证明为 WAL fsync 串行 → 需真实 Linux/SSD 销项（§10.2.7） | `reports/perf/native-*/summary.json`、`reports/perf/docker-container-*/summary.json`、`docs/75-perf-baseline.md` |
+| 性能冒烟（k6 100 写 + 100 读 VU / 3m） | ⚠️ **本机 8 组 + GitHub runner 2 组实测完成**：本机容器（8 worker/fsync=on）read 14.2ms ✅ / 保存 199.7ms ✅ / 开场 burst 428ms ❌；GitHub 4 vCPU runner：read 90.4ms ✅（8 worker）/ 301.6ms（4 worker），开场 burst 1.1–1.8s ❌ → **容量问题 + 开场 burst 需产品优化或 ≥8 vCPU 选型**（§10.2.7、§10.2.8） | `reports/perf/**`、CI run `42847410502`/`42849133088` 的 artifact、`docs/75-perf-baseline.md` |
 | staging 部署→回滚演练 | ✅ **PASS**（2026-11-10 13:28 本机 Docker）：deploy **17s** → smoke **1s** → rollback **11s**（≤900s）→ smoke **1s**，总 **31s**，`steps` 四步全 PASS | `reports/release-drill-20261110T052821Z.json`、`deploy/evidence/release-drill-staging-20261110T052821Z.log` |
 
 **期间修复（测试缺陷，非实现缺陷）**：`test_audit_system_record_has_null_actor_and_dash_ip` 曾把 `auth.login_failed`（`actor_id=None` 但 ip 为真实地址）误当系统记录，导致偶发失败；已改为只筛 `action=user.create` 且 `actor_id=None` 的记录。
 
-**G4 仍缺（环境型，非代码问题）**：
-1. 性能最终确认（原生 PG + 容器内共 8 组实测已完成，容量与 fsync 归因清晰；**真实 Linux/SSD runner 上尚未跑**——本机原生 NTFS 与 Docker Desktop 的 VHDX 都落在 Windows NTFS，无法代表线上存储。CI 已备好手动 `perf` job，推送后 Run workflow 即可销项）；
-2. ~~staging 部署→回滚演练~~ ✅ **已完成**（`reports/release-drill-20261110T052821Z.json`，四步 PASS、rollback 11s）；
-3. CI 三 job 首跑（git 已装、仓库已初始化并提交，需推送到 GitHub 远端后观察）。
+**G4 仍缺（性能容量，需产品或选型决策）**：
+1. ~~staging 部署→回滚演练~~ ✅ 已完成（四步 PASS、rollback 11s）；
+2. ~~CI 三 job 首跑~~ ✅ 已完成（run `42848561341`：backend 76s / frontend 78s / contract 16s / ci-gate 绿；期间修复 DEF-005/006/007）；
+3. **性能门槛仍未通过**：GitHub 4 vCPU runner 上 read 90.4ms ✅ 但开场 burst 1.1–1.8s ❌；本机 20 核最优 428ms ❌。需要**二选一/并行**：
+   - **选型**：生产按 ≥8 vCPU、`WEB_CONCURRENCY≈vCPU` 部署（CI 标准 runner 只有 4 vCPU，不足以作为销项环境）；
+   - **产品优化**：降低开场建会话每请求 CPU（冻结题面缓存、认证上下文复用、响应序列化），并在 `answer_save` 场景把「同秒开考 burst」与「稳态保存」分开度量（需 R0/QA 评审，不允许偷改阈值）。
+4. 完成 3 之后，在满足选型的 runner 上重跑 `perf` job 销项。
 
-**结论**：功能、契约、安全、E2E、备份恢复、compose 配置、**staging 部署回滚演练**均有真实运行证据；**性能已完成 8 组实测与修复（多 worker + 池摊分），读/保存达标，开场 burst 受宿主存储 flush 限制，需在真实 Linux/SSD 销项**。G4 = **CONDITIONAL（性能 Linux 销项 + CI 首跑）**。
+**结论**：功能、契约、安全、E2E、备份恢复、compose、**staging 演练、CI 三 job 首跑**均有真实运行证据；**性能已定位为「4 vCPU 容量不足 + 开场 burst 每请求 CPU 偏高」，尚未达门槛**。G4 = **CONDITIONAL（性能容量待决策/优化）**。
 
 ### 10.2 PERF-001 性能缺陷记录（G4 阻断项）— 2026-11-10 原生 PG 复测与修复
 
@@ -292,4 +298,31 @@ Docker Desktop 恢复可用（engine 29.9.3、`docker compose config` exit 0）�
 > 诊断补充（同一容器，仅把 PG 改为 `synchronous_commit=off`，`reports/perf/docker-container-syncoff-20261110-1255/`）：
 > `answer_save` p95 **252ms ✅**、`session_read` p95 **21.9ms ✅**、保存 p95 **229ms ✅**、失败率 **0 ✅**。
 > 同一拓扑、同一数据量，仅去掉提交落盘 → 开场 burst 从 428ms 掉到 252ms，**确认写尾就是 WAL fsync 串行**（该配置只用于诊断，不得用于生产判定）。
+
+#### 10.2.8 GitHub Actions 上的真实 Linux runner 实测（2026-11-10/11，perf job）
+
+`runs-on: ubuntu-latest`（GitHub 托管，4 vCPU）；拓扑 = compose 起 `postgres` + 构建的 `exam-api`（发布 18000），k6 在 runner 宿主上压测；100 写 + 100 读 VU / 3min。
+
+| run | commit / 配置 | session_read p95 | 保存 p95 | answer_save p95（含开场 burst） | 失败率 | 备注 |
+|---|---|---|---|---|---|---|
+| `42847410502` | `22cd4c6`，`WEB_CONCURRENCY=8` | **90.4ms ✅** | 510ms ❌ | **1601ms ❌**（`session_start` p95 1791ms） | 0.13% ❌（21 次 EOF + 21 次读场景建会话失败） | 8 worker 在 4 vCPU 上过订阅；k6 无法写 summary（DEF-008） |
+| `42849133088` | `75d9112`，`WEB_CONCURRENCY=4` | **301.6ms ❌**（p90 250ms） | 860ms ❌ | **会话建连 p95 1173ms** | **0 ✅** | 无 EOF，但 4 worker 处理 200 VU 仍不足；artifact 完整（summary + 容器日志） |
+
+**解读**：
+- 读路径在 8 worker 时 90ms 达标，4 worker 时 302ms 贴线失败 → **4 vCPU 是当前瓶颈**，而 8 worker 虽压低延迟却在 4 核上过订阅导致连接被重置（EOF，0.13% 失败率）。
+- 开场 100 并发建会话在 4 vCPU 上稳定 1.1–1.8s，即使最优本机 20 核也只能到 428ms（§10.2.7）→ **`p95<300ms` 的开场 burst 在当前架构 + 4 vCPU 上不可达**。
+- 结论：这不是"配置一调就绿"的问题，需要**两条同时做**：① 生产按 ≥8 vCPU 选型（`WEB_CONCURRENCY≈vCPU`）；② 优化开场建会话的每请求 CPU（缓存冻结题面、认证上下文复用、响应序列化）。在完成前，G4 性能项保持 **CONDITIONAL（容量）**，不得写成通过。
+
+### 10.3 CI 首跑与流水线缺陷（2026-11-10/11）
+
+| run | 事件 | 结论 | 说明 |
+|---|---|---|---|
+| `42841073643` | push（首推） | success（**但假绿**） | backend/frontend/contract 全 skipped，ci-gate 仍 success → DEF-005 |
+| `42841208142` | push | failure | 真实暴露 DEF-006（mypy 找不到 `app.reports`）与 DEF-007（前端 1s 超时） |
+| `42846874520` | push | **success** | backend/frontend 绿；contract skipped（本次未改契约路径）；DEF-005/006/007 已修 |
+| `42848561341` | push | **success（三 job 全跑）** | backend 76s / frontend 78s / contract 16s / ci-gate 4s → **CI 三 job 首跑全绿** |
+| `42847410502` | workflow_dispatch | failure | perf job 首跑失败（容量，见 §10.2.8） |
+| `42849133088` | workflow_dispatch | failure | perf job 第二跑（4 worker）：失败率 0，但延迟未达标 |
+
+> 全部 run 均在 `https://github.com/fengshouleng/fengshouleng/actions`；artifacts：perf job 上传 `reports/perf/**`（k6 日志 + summary.json + 失败时容器日志）。
 

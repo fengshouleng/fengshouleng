@@ -145,3 +145,12 @@
     2. `DEF-003`：`smoke.sh` 题干固定，第二次执行触发题库唯一约束 409 → 冒烟不可重复；已加 `[时间戳-pid]` 唯一后缀。
   - **本地执行顺序**（可复现）：预置 staging 管理员（新库必须 `create-admin`）→ `staging_drill.sh --env staging --env-file deploy/.env.staging --project exam-staging --base-url http://127.0.0.1:8080`。
   - **G4 状态**：演练项 ✅ 销项；剩余 = **真实 Linux/SSD 的 perf 销项** + **CI 三 job 首跑**，均需 GitHub 远端推送后由 Actions 触发。
+- 2026-11-10/11（GitHub 入库 + CI 首跑 + 真实 runner 性能实测）：
+  - **推送**：`https://github.com/fengshouleng/fengshouleng`，main 分支；`github.com:443` 中途被网络阻断时改用 GitHub Git Data API 建提交（脚本 `reports/ci/api_commit.ps1`），网络恢复后已 fetch/reset 对齐。
+  - **CI 缺陷（均已修复并复跑验证）**：`DEF-005` 首推/dispatch 时三 job 被 skipped 却 ci-gate success（假绿）；`DEF-006` `.gitignore` 裸 `reports/` 误伤 `server/app/reports`（CI 报 mypy import-not-found）；`DEF-007` 前端 findByTestId 1s 超时；`DEF-008` perf job 未建 `PERF_REPORT_DIR` 导致 k6 写不了 summary。
+  - **CI 三 job 首跑全绿**：run `42848561341`（backend 76s / frontend 78s / contract 16s / ci-gate 4s）。
+  - **perf job（真实 Linux runner，4 vCPU）**：
+    - run `42847410502`（8 worker）：`session_read` p95 **90.4ms ✅**、保存 510ms、`answer_save` p95 **1601ms**、失败率 0.13%（21 次 EOF）；k6 summary 未落盘（DEF-008）。
+    - run `42849133088`（4 worker + 修 DEF-008）：读 p95 **301.6ms ❌**、保存 860ms、开场建会话 p95 1173ms、失败率 **0 ✅**；artifact 完整。
+    - 结论：**4 vCPU 容量不足 + 开场 100 并发建会话每请求 CPU 偏高**；本机 20 核最优也只有 428ms，说明 `p95<300ms` 的开场 burst 在当前架构/该 runner 上不可达。
+  - **决策待定（需产品/R0 拍板）**：① 生产选型 ≥8 vCPU 后再跑 perf 销项；② 或先做产品优化（冻结题面缓存、认证上下文复用、响应序列化），并把 burst 与稳态分开度量（阈值改动需评审）。**在完成前 G4 性能项保持 CONDITIONAL，不写通过**。

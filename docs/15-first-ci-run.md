@@ -71,3 +71,16 @@ git push -u origin main
 - [x] staging 部署→回滚演练（2026-11-10 **PASS**：deploy 17s / rollback 11s，`reports/release-drill-20261110T052821Z.json`）
 - [x] 备份恢复演练（DR-20261110-01，PASS，见 `docs/71`）
 - [ ] G4 后的生产上线审批（DSH approval = ask，脚本不自批）
+
+## 8. 实际首跑记录（2026-11-10/11，已完成）
+
+| run | 事件 | 结论 | 备注 |
+|---|---|---|---|
+| `42841073643` | push（首推） | success（**假绿**） | 三 job skipped、ci-gate success → DEF-005 |
+| `42841208142` | push | failure | 暴露 DEF-006（mypy `app.reports`）/ DEF-007（前端 1s 超时） |
+| `42846874520` | push | success | backend/frontend 绿；contract skipped（未改契约路径） |
+| **`42848561341`** | push | **success（三 job 全跑）** | backend 76s / frontend 78s / contract 16s / ci-gate 4s ← **CI 三 job 首跑全绿** |
+| `42847410502` | workflow_dispatch | failure | perf 首跑：read 90.4ms ✅ / 保存 501ms / burst 1601ms / 失败 0.13% |
+| `42849133088` | workflow_dispatch | failure | perf 二跑（4 worker）：read 301.6ms / 保存 860ms / burst 1173ms / 失败 0% |
+
+结论：**CI 常规门（backend/frontend/contract/ci-gate）已全绿**；`perf` 门槛未过，是容量/开场 burst 问题（`docs/61 §10.2.8`），不阻塞 CI 常规门。
