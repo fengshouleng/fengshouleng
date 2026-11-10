@@ -15,7 +15,7 @@
 | G1 范围冻结 | ✅ 放行（采用默认假设 A1–A4） | 见 `docs/01-scope-freeze.md`；变更走 ADR |
 | G2 契约冻结 | ✅ v1.0.3（机器门通过） | 22+9+4 条缺陷/一致性问题全处置；`openapi-spec-validator` → OK；contract 55 passed / 0 xfail |
 | 卡进度 | ✅ 完成 | 26 张任务卡 + 6 轮契约/测试同步全部完成 |
-| 自动化验证 | ✅ G3 通过；🟡 G4 条件通过 | contract 55 / backend **164** / frontend **91** 全绿；security **134** / E2E **5 UI 链路** / 备份恢复 **PASS** / compose config OK / **staging 部署→回滚 PASS（17s/11s）** / **CI 三 job 首跑全绿**（run `42848561341`）。**性能（已优化）：GitHub 4 vCPU runner 上 read p95 301→**19.96ms** ✅、save 860→349ms、开场 burst 1173→711ms、失败率 0；8 worker 反证更差（1409ms）。单次建会话 ≈12ms CPU ×100 并发 / 4 核 ≈300ms 下界 → 4 vCPU 无法稳定满足开场 burst<300ms：需 ≥8 vCPU 选型或评审「burst 与稳态分开度量」**（`docs/61 §10.2.9`、`docs/75`） |
+| 自动化验证 | ✅ G3 通过；🟡 G4 条件通过 | contract 55 / backend **164** / frontend **91** 全绿；security **134** / E2E **5 UI 链路** / 备份恢复 **PASS** / compose config OK / **staging 部署→回滚 PASS（17s/11s）** / **CI 三 job 首跑全绿**（run `42848561341`）。**性能（两轮优化 + 剖析）：4 vCPU 上 read p95 301→**19.96–37.5ms** ✅、start p50 310→**166ms**、save p50 99→**32ms**、失败率 0；单请求服务端 CPU 已压到 2.7–5.2ms，但开场 burst p95 仍 500–1176ms（4 vCPU 与 k6/PG 共享，同配置波动 711–1176ms）→ 需 ≥8 vCPU 或评审拆分「burst 与稳态」阈值**（`docs/61 §10.2.9/§10.2.10`、`docs/75`） |
 | 代码入库 | ✅ 已初始化 | Git 2.56；`.gitattributes` 统一换行（sh/py/yml=LF，ps1/cmd=CRLF）；初始提交 `d28d652`，工作区干净 |
 
 ## 目录结构

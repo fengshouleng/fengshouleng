@@ -15,6 +15,8 @@
 | GitHub runner（4 vCPU，优化前，4 worker） | 301.6ms | 1173ms | ❌ |
 | **GitHub runner（4 vCPU，会话序列化优化后，4 worker）** | **19.96ms** | **711ms**（save 349ms） | ❌（仅开场 burst 超标） |
 | GitHub runner（4 vCPU，优化后，8 worker） | 43.8ms | 1409ms | ❌（过订阅，明确更差） |
+| GitHub runner（4 vCPU，第二轮优化，池 5+5） | 24.2ms | p50 166ms / p95 10.2s（80 次 pool timeout） | ❌（池太小） |
+| GitHub runner（4 vCPU，第二轮优化，池 12+12） | 37.5ms | p95 1176ms（p50 未单独记） | ❌（4 vCPU CPU 争用，run 间方差大） |
 
 - **读路径**是应用容量问题：worker 数决定（本机 4 worker 即达标；容器内 8 worker 读 P95 14ms）。
 - **写/开场尾延迟**由 PostgreSQL 提交落盘（WAL fsync）主导：本机原生（NTFS）与 Docker Desktop 容器（VM 磁盘仍是 Windows NTFS 上的 VHDX）**都**出现 300–900ms 的开场 COMMIT 串行；

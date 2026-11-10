@@ -160,3 +160,9 @@
   - **8 worker 反证**（run `42853200977`）：read 43.8ms、save 665ms、start 1409ms —— 4 vCPU 上过订阅，已回退 4 worker。
   - **容量结论**：单次 start ≈ 12ms CPU × 100 并发 / 4 核 ≈ 300ms 下界 → 4 vCPU runner **无法稳定满足开场 burst p95<300ms**；需 ≥8 vCPU 或评审「burst 与稳态分开度量」。
   - **G4**：维持 CONDITIONAL；性能项待选型/口径决策后，在达标 runner 上销项。
+- 2026-11-11（00:30–01:00，深挖代码：逐请求剖析 + 第二轮优化 + 池问题定位）：
+  - **剖析**（in-process ASGI + cProfile，本机空载）：`GET /sessions/{id}` **2.7–3.2ms**、`POST /exams/{id}/sessions`（新建）**3.1–3.4ms**、`PUT answers`（10 题）**≈5.2ms**；GET handler 1.7ms、单次 SQL execute ≈0.44ms、commit ≈2.1ms → **单请求服务端 CPU 已到低位**。
+  - **第二轮优化（`90bb69d`）**：开考路径 exam+会话合并 outer join（少 1 往返）、新建会话跳过 answers 查询；读路径会话+考试合并 join；`db.reset_engine()` 清缓存避免测试跨库污染。backend 164 + contract 55 全绿。
+  - **CI p50 显著改善**（run `42857195723`，4 vCPU）：start **310→166ms**、save **99→32ms**、read **6.7→5.1ms**；但同轮 80 次 `QueuePool(5+5) timeout` 把 p95 拖到 10–20s。
+  - **池修复**（`e2487a6`）：CI 池提到 4×(12+12)=96 < PG 100；run `42859094367` 无 pool timeout，read p95 37.5ms ✅、save p95 1006ms、start p95 1176ms（同配置 run 间 711–1176ms 波动）。
+  - **结论**：代码侧已无可获益的显著热点；4 vCPU（与 k6/PG 共享）上开场 burst 的 p95 结构性达不到 300ms。**销项二选一：≥8 vCPU runner，或 R0/QA 评审拆分「burst 与稳态」阈值。**
