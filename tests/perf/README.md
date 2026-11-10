@@ -323,7 +323,24 @@ k6 run tests/perf/k6/exam_flow.js 2>&1 | Tee-Object -FilePath "reports/perf/$env
 
 ---
 
-## 9. 追溯
+## 9. 服务端侧延迟拆解（`analyze_server_latency.py`）
+
+k6 与被测 API 同机时，`http_req_duration` 里混着压测机自身的调度排队，无法区分
+「应用慢」与「压测机饿」。`analyze_server_latency.py` 从 **API 容器日志**（访问日志里的
+`latency_ms`，服务端 `perf_counter` 口径）重建分布，并按 5s 时间桶拆开，用来识别冷启动与突发：
+
+```bash
+python tests/perf/analyze_server_latency.py <compose-logs.txt> \
+  --json reports/perf/server-side-latency.json
+```
+
+输出：按路由族（save / read / start / login / other）的 count/p50/p90/p95/p99/max，
+以及 save、read 的每 5s 桶延迟（桶视图看「第一波 vs 末波」即可判断是否冷启动）。
+判读顺序与实测样例见 `docs/75-perf-baseline.md §8`、`docs/61-gate-report.md §10.4`。
+
+---
+
+## 10. 追溯
 
 | 文档 | 关系 |
 |---|---|

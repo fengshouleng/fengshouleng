@@ -1,4 +1,4 @@
-# 61 · 发布门报告（模板）
+﻿# 61 · 发布门报告（模板）
 
 > 每次门控（G2 / G3 / G4 / G5）复制本文件为一节，或用「追加」方式在文末新增区块。
 > 规则（`tests/README.md`）：**每条命令必须记录命令、退出码、通过/失败数、耗时、日志路径**；
@@ -369,4 +369,82 @@ CI 侧的 p50 变化证明优化有效：**start 310→166ms、save 99→32ms、
 | `42859094367` | workflow_dispatch | failure | 池 12+12：无 timeout，read 37.5ms ✅、save p95 1006ms、start p95 1176ms（4 vCPU 方差） |
 
 > 全部 run 均在 `https://github.com/fengshouleng/fengshouleng/actions`；artifacts：perf job 上传 `reports/perf/**`（k6 日志 + summary.json + 失败时容器日志）。
+
+### 10.4 服务端侧延迟拆解与冷启动修复（2026-11-11）
+
+#### 10.4.1 为什么还要拆一次：k6 数字可能含压测机排队
+
+`perf` job 里 k6、postgres、api、docker 共享同一台 **4 vCPU** runner。k6 的
+`http_req_duration` 从「VU 发请求」开始计时，因此**压测机自身被 CPU 饿住时的调度延迟也被算进 P95**，
+这类失败无法区分「应用慢」与「测量方式不对」。取巧的做法是改阈值，正确做法是拿到**服务端视角**的分布。
+
+`app/middleware/access_log.py` 本来就对每个请求在响应结束时用 `time.perf_counter()` 记了
+`latency_ms`（不含网络与客户端排队），perf job 失败时会把容器日志归档为 artifact。于是新增
+`tests/perf/analyze_server_latency.py`，直接从归档日志重建服务端侧 P50/P95/P99，并按 5s 时间桶拆开。
+
+```bash
+python tests/perf/analyze_server_latency.py \
+  reports/ci/run-42859094367/perf-42859094367-1/ci/compose-logs.txt \
+  --json reports/perf/server-side-latency-42859094367.json
+```
+
+#### 10.4.2 结论一：失败不是客户端假象（服务端真的慢）
+
+来源 run `42859094367`（`e2487a6`，4 worker、池 12+12），35 840 行 access 日志：
+
+| 路由族 | 样本 | p50 | p90 | p95 | p99 | max |
+|---|---|---|---|---|---|---|
+| `PUT /sessions/{id}/answers`（门槛项） | 580 | 110.3ms | 951.0ms | **1026.5ms** | 1152.3ms | 1199.8ms |
+| `GET /sessions/{id}`（读门槛项） | 34 705 | 10.5ms | 23.6ms | **38.5ms** | 149.0ms | 1131.9ms |
+| `POST /exams/{id}/sessions`（开场/恢复） | 200 | 754.6ms | 1008.7ms | **1044.3ms** | 1079.5ms | 1452.6ms |
+| `POST /auth/login` | 105 | 321.7ms | 360.1ms | 371.1ms | 679.0ms | 686.2ms |
+| 其他（健康检查等） | 250 | 35.2ms | 66.5ms | 128.2ms | 252.9ms | 319.5ms |
+
+- **读路径服务端 p95 = 38.5ms，已达标**；写路径与开场是真慢，所以 k6 判红是对的；
+- 顺带确认：本机空载时这些接口只有 3–5ms CPU（§10.2.9），**同一个请求在 4 vCPU 争用下变成 10–100×**。
+
+#### 10.4.3 结论二：尾部一半来自「冷启动」，不是稳态容量
+
+按 5s 桶看 save（每 30s 一波 100 并发保存）：
+
+| 时间桶 | count | p50 | p95 | max |
+|---|---|---|---|---|
+| t≈20s（第一波） | 100 | **766.2ms** | 1060.4ms | 1105.6ms |
+| t≈50/55s | 37 / 63 | 147.8 / 975.2ms | 702.4 / 1169.4ms | — |
+| t≈80/85s | 39 / 61 | 54.2 / 195.7ms | 110.6 / 430.1ms | — |
+| t≈110/115s | 36 / 64 | 31.4 / 67.8ms | 65.5 / 184.6ms | — |
+| t≈140/145s | 32 / 68 | 34.7 / 62.3ms | 149.1 / 129.5ms | — |
+| t≈170/175s | 24 / 56 | 40.4 / 99.6ms | 112.1 / 237.4ms | — |
+
+**同一规模、同一负载，第一波与最后一波差 7.7×**（p50 766ms → 99ms）。同时读侧在保存突发所在桶被拖慢
+（t≈55s 桶 p95 799ms，其余桶 13–48ms）。这说明：**冷启动（空连接池 + 空缓存）+ 100 并发突发
+把整机占满**，稳态其实接近门槛（末段 save p95 已到 112–237ms）。
+
+#### 10.4.4 修复：把冷启动成本挪到接流量之前（三处改动）
+
+| 改动 | 位置 | 作用 |
+|---|---|---|
+| **启动预热** | `server/app/warmup.py`、`server/app/main.py`（lifespan） | 进程接流量前把 QueuePool 按 `DB_POOL_SIZE+DB_MAX_OVERFLOW` 一次填满（含 overflow），并装载已冻结试卷快照 / 已发布考试的题面视图。启动日志输出一行 `{"event":"startup.warmup","pool_connections":..,"papers":..,"questions":..}` |
+| **冻结快照进程内缓存** | `server/app/scoring/service.py` | `papers.frozen_snapshot` 冻结后不可变，按 `(数据库URL, paper_id)` LRU 缓存，自动保存每请求省掉「查 papers 大 JSON 列 + 解析 100 题」；`db.reset_engine()` 与 `clear_snapshot_cache()` 负责失效 |
+| **压测环境放宽连接预算** | `deploy/docker-compose.perf.yml`、`.github/workflows/ci.yml` | perf 覆盖文件把 postgres `max_connections` 放宽到 200、`shared_buffers=256MB`；CI 池改 15+15（4×30=120），配合预热让 100 并发保存不再有「冷建连接」阶段 |
+
+设计约束（写进代码注释与 `deploy/.env.example`）：
+- 预热**只读**、**失败只记日志**，任何异常都不得让服务起不来；
+- 连接预算仍是 `WEB_CONCURRENCY × (POOL_SIZE + MAX_OVERFLOW) < postgres max_connections`，预热只是**提前**占用，不是额外占用；
+- 预热结果可核对：`docker compose logs api | grep startup.warmup`；perf job 新增「确认启动预热已生效」步骤，一条都没有就立即失败（避免又变成「改了但没生效」的假绿）；
+- `WARMUP_ENABLED=false` 可关闭（排障用）。
+
+本机原生 PG 验证（2 worker、池 4+4、真实 9 份冻结试卷）：
+
+```text
+{"level":"info","logger":"app.warmup","event":"startup.warmup","enabled":true,
+ "pool_connections":8,"papers":9,"questions":900,"exams":9}
+pg_stat_activity: datname=exam 连接数 10（= 8 预热 + 2 常驻）
+probe: GET /sessions/{id} p50 5.3ms、PUT /sessions/{id}/answers p50 5.1ms（无回归）
+```
+
+回归验证：`ruff` 全绿、`mypy app` 62 文件通过、`pytest` **172 passed**（新增
+`server/tests/sessions/test_snapshot_cache.py` 8 条，覆盖「缓存命中 / 失效 / 跨库隔离 /
+reset_engine 清理 / 预热三种降级路径」）。
+
 

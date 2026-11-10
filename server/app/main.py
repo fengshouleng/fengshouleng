@@ -12,8 +12,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -26,6 +29,25 @@ from app.api.health import router as health_router
 from app.errors import AppError
 from app.middleware.access_log import AccessLogMiddleware
 from app.settings import Settings, get_settings
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """启动预热（docs/61 §10.2.11）：把连接池 / 冻结快照 / 题面视图的冷启动成本
+    挪到开始接流量之前。预热失败只记日志，绝不让服务起不来。
+
+    放在线程里执行：预热是同步 DB 调用，不能阻塞事件循环；uvicorn 会等 lifespan
+    startup 完成后才开始 serve，因此不会出现「半个进程热、半个冷」的竞态。
+    """
+    resolved = getattr(application.state, "settings", None)
+    if isinstance(resolved, Settings) and resolved.warmup_enabled:
+        from app.warmup import warm_up
+
+        # warm_up 内部已逐步兜底；这里只防「连兜底都意外抛」把启动搞挂
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(warm_up, resolved)
+    yield
+
 
 # HTTP 状态 -> 错误码（contracts/openapi.yaml 的 400/401/403/404/409/422/500 分支）
 HTTP_STATUS_TO_CODE: dict[int, str] = {
@@ -82,6 +104,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         docs_url=f"{resolved.api_prefix}/docs",
         redoc_url=None,
         openapi_url=f"{resolved.api_prefix}/openapi.json",
+        lifespan=lifespan,
     )
     application.state.settings = resolved
 

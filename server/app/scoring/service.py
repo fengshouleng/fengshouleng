@@ -20,11 +20,13 @@ multiple + partial      完全相等 → 满分；无错选 → round(选中正�
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Sequence
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from app import errors
@@ -38,6 +40,54 @@ from app.models.question import QuestionType
 
 _POINTS_QUANTUM = Decimal("0.01")
 _ZERO = Decimal("0.00")
+
+#: 冻结快照 LRU 缓存（进程内）。`papers.frozen_snapshot` 一旦冻结就**不可变**
+#: （`freeze_paper` 幂等早返回，`update_paper` 拒绝已冻结试卷），因此按
+#: `(数据库 URL, paper_id)` 缓存题目元组是安全的；它把自动保存每请求的
+#: 「查 papers 大 JSON 列 + 解析 100 题」降为一次 dict 命中。
+#: 键里带数据库 URL：测试每个用例是独立的临时 SQLite，`paper_id` 都从 1 开始，
+#: 只用 paper_id 会跨用例命中上一条的快照（2026-11-11 首次尝试就踩到这个坑）。
+_SNAPSHOT_CACHE: OrderedDict[tuple[str, int], tuple[dict[str, Any], ...]] = OrderedDict()
+_SNAPSHOT_CACHE_MAX = 64
+
+
+def clear_snapshot_cache() -> None:
+    """清空冻结快照缓存（切换数据库或测试重建库后调用）。"""
+    _SNAPSHOT_CACHE.clear()
+
+
+def _engine_key(db: Session) -> str:
+    """缓存键里的数据库标识：同一进程内换库（测试/运维）时不会串味。"""
+    bind = db.get_bind()
+    engine = bind.engine if isinstance(bind, Connection) else bind
+    return str(engine.url)
+
+
+def _cache_snapshot(paper_id: int, url: str, items: tuple[dict[str, Any], ...]) -> None:
+    _SNAPSHOT_CACHE[(url, paper_id)] = items
+    _SNAPSHOT_CACHE.move_to_end((url, paper_id))
+    while len(_SNAPSHOT_CACHE) > _SNAPSHOT_CACHE_MAX:
+        _SNAPSHOT_CACHE.popitem(last=False)
+
+
+def preload_snapshot(db: Session, paper: Paper) -> int:
+    """把一份已冻结试卷的快照装进缓存（启动预热用），返回题目数。"""
+    items = _items_from_paper(paper)
+    _cache_snapshot(int(paper.id), _engine_key(db), items)
+    return len(items)
+
+
+def _items_from_paper(paper: Paper | None) -> tuple[dict[str, Any], ...]:
+    """校验试卷快照结构并取出题目元组（纯函数，便于预热与读取共用）。"""
+    if paper is None:
+        raise AppError(errors.INTERNAL_ERROR, "考试关联的试卷不存在", 500)
+    snapshot = paper.frozen_snapshot
+    if not isinstance(snapshot, dict):
+        raise AppError(errors.INTERNAL_ERROR, "试卷尚未冻结，无法判分", 500)
+    questions = snapshot.get("questions")
+    if not isinstance(questions, list) or not questions:
+        raise AppError(errors.INTERNAL_ERROR, "试卷快照缺少题目，无法判分", 500)
+    return tuple(item for item in questions if isinstance(item, dict))
 
 
 def as_points(value: Any) -> Decimal:
@@ -89,17 +139,22 @@ def score_question(
 
 
 def snapshot_questions(db: Session, exam: Exam) -> list[dict[str, Any]]:
-    """取该考试对应试卷的冻结快照题目（判分与作答视图的唯一数据来源）。"""
-    paper = db.get(Paper, exam.paper_id)
-    if paper is None:
-        raise AppError(errors.INTERNAL_ERROR, "考试关联的试卷不存在", 500)
-    snapshot = paper.frozen_snapshot
-    if not isinstance(snapshot, dict):
-        raise AppError(errors.INTERNAL_ERROR, "试卷尚未冻结，无法判分", 500)
-    questions = snapshot.get("questions")
-    if not isinstance(questions, list) or not questions:
-        raise AppError(errors.INTERNAL_ERROR, "试卷快照缺少题目，无法判分", 500)
-    return [item for item in questions if isinstance(item, dict)]
+    """取该考试对应试卷的冻结快照题目（判分与作答视图的唯一数据来源）。
+
+    走进程内 LRU（见 `_SNAPSHOT_CACHE`）：冻结快照不可变，重复读取直接命中，
+    省掉一次 `papers` 大 JSON 列的查询与解析——这是自动保存每请求的固定开销
+    （docs/61 §10.2.11）。命中时返回的是**同内容的新 list**，调用方不得修改其中的 dict。
+    """
+    url = _engine_key(db)
+    key = (url, int(exam.paper_id))
+    cached = _SNAPSHOT_CACHE.get(key)
+    if cached is not None:
+        _SNAPSHOT_CACHE.move_to_end(key)
+        return list(cached)
+    items = _items_from_paper(db.get(Paper, exam.paper_id))
+    _cache_snapshot(int(exam.paper_id), url, items)
+    return list(items)
+
 
 
 def grade_session(db: Session, session: ExamSession, *, exam: Exam) -> Decimal:
@@ -142,7 +197,9 @@ def grade_session(db: Session, session: ExamSession, *, exam: Exam) -> Decimal:
 
 __all__ = [
     "as_points",
+    "clear_snapshot_cache",
     "grade_session",
+    "preload_snapshot",
     "score_question",
     "snapshot_questions",
 ]

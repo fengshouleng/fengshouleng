@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     db_pool_timeout: int = 10
     db_pool_recycle: int = 1800
 
+    # 启动预热（docs/61 §10.2.11）：进程接流量前先把连接池填满，并装载已冻结试卷的
+    # 快照 / 题面视图，避免「部署完学生同秒开考」把冷启动成本算进 P95。
+    # 预热只读、失败只记日志；排障或需要最快启动时可设 WARMUP_ENABLED=false。
+    warmup_enabled: bool = True
+
     @property
     def is_sqlite(self) -> bool:
         """SQLite 需要 `check_same_thread=False` 才能配合多线程测试客户端。"""

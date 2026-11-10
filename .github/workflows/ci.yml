@@ -380,10 +380,12 @@ jobs:
           # 2026-11-11 结论：4 vCPU runner 上 4 worker 最优（8 worker 过订阅，更差）。
           # 池必须够大：优化后 start p50 从 310ms 降到 166ms，并发压力反而更大，
           # 池 5+5（每 worker 10）在 run 42857195723 上触发 80 次 QueuePool timeout(10s)。
-          # 4 worker × (12+12) = 96 < postgres 默认 max_connections=100。
+          # 启动预热（docs/61 §10.2.11）会把池一次填满：4×(15+15)=120，
+          # 因此 perf 覆盖文件把 postgres max_connections 放宽到 200。
           WEB_CONCURRENCY=4
-          DB_POOL_SIZE=12
-          DB_MAX_OVERFLOW=12
+          DB_POOL_SIZE=15
+          DB_MAX_OVERFLOW=15
+          WARMUP_ENABLED=true
           EOF
 
       - name: 启动 postgres + api（构建镜像，api 发布 18000）
@@ -407,6 +409,23 @@ jobs:
           echo "::error::api 未在 180s 内健康"
           docker compose ${COMPOSE_ARGS} logs api
           exit 1
+
+      - name: 确认启动预热已生效（docs/61 §10.2.11）
+        shell: bash
+        run: |
+          mkdir -p reports/perf/ci
+          docker compose ${COMPOSE_ARGS} logs --no-color api \
+            | grep '"event":"startup.warmup"' | tee reports/perf/ci/startup-warmup.log || true
+          count=$(grep -c '"event":"startup.warmup"' reports/perf/ci/startup-warmup.log || true)
+          echo "::notice::启动预热日志 ${count} 行（预期 = WEB_CONCURRENCY）"
+          if [ "${count}" -lt 1 ]; then
+            echo "::error::没有启动预热日志：预热未生效，冷启动连接会算进 P95"
+            exit 1
+          fi
+          cold=$(grep -c '"pool_connections":0' reports/perf/ci/startup-warmup.log || true)
+          if [ "${cold}" -gt 0 ]; then
+            echo "::warning::有 ${cold} 个 worker 连接池预热为 0（检查 postgres max_connections）"
+          fi
 
       - name: 安装造数依赖 + 创建 admin
         shell: bash

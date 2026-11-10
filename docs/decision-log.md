@@ -1,4 +1,4 @@
-# Decision Log（R0 Lead 维护）
+﻿# Decision Log（R0 Lead 维护）
 
 > 规则：任何门控结论、契约变更、范围调整、失败升级都必须在此留痕。
 > 每条决策格式：ID / 日期 / 决策 / 依据 / 影响面 / 复核人。
@@ -166,3 +166,12 @@
   - **CI p50 显著改善**（run `42857195723`，4 vCPU）：start **310→166ms**、save **99→32ms**、read **6.7→5.1ms**；但同轮 80 次 `QueuePool(5+5) timeout` 把 p95 拖到 10–20s。
   - **池修复**（`e2487a6`）：CI 池提到 4×(12+12)=96 < PG 100；run `42859094367` 无 pool timeout，read p95 37.5ms ✅、save p95 1006ms、start p95 1176ms（同配置 run 间 711–1176ms 波动）。
   - **结论**：代码侧已无可获益的显著热点；4 vCPU（与 k6/PG 共享）上开场 burst 的 p95 结构性达不到 300ms。**销项二选一：≥8 vCPU runner，或 R0/QA 评审拆分「burst 与稳态」阈值。**
+- 2026-11-11（01:00–01:40，服务端侧口径拆解 + 冷启动修复）：
+  - **新证据**：用归档的容器访问日志（`latency_ms`，服务端 `perf_counter` 口径）重建分布，脚本 `tests/perf/analyze_server_latency.py`。run `42859094367`：save 服务端 p50 110ms / **p95 1026ms**、read **p95 38.5ms ✅**、start p50 754ms / p95 1044ms → **k6 判红不是客户端假象，且读侧早已达标**。
+  - **关键发现（冷启动）**：按 5s 桶看，同一规模 100 并发保存的 p50 从 t≈20s 的 **766ms** 降到 t≈175s 的 **99ms**（7.7×）；读侧在保存突发所在桶被拖到 p95 799ms。即尾部一半来自「空连接池 + 空缓存」的冷启动，稳态已接近门槛。
+  - **修复**：
+    ① 启动预热 `server/app/warmup.py` + `app.main` lifespan：接流量前填满 QueuePool、装载冻结快照/题面视图；只读、失败只记日志、`WARMUP_ENABLED` 可关；stdout 输出 `startup.warmup` 行便于核对。
+    ② `scoring.snapshot_questions` 增加冻结快照进程内 LRU（键含数据库 URL，`reset_engine()` 负责失效）：自动保存每请求少一次 `papers` 大 JSON 查询/解析。
+    ③ perf 覆盖文件放宽 PG `max_connections=200`、CI 池改 15+15（4×30=120）；perf job 新增「确认启动预热已生效」门（没有 warmup 行直接失败，杜绝「改了没生效」的假绿）。
+  - **验证**：本机原生 PG（2 worker/池 4+4/9 份冻结试卷）预热输出 `pool_connections=8, papers=9, questions=900`，`pg_stat_activity`=10；探针 GET p50 5.3ms、PUT p50 5.1ms 无回归；ruff/mypy 绿、**pytest 172 passed**（新增 8 条缓存/预热用例）。
+  - **G4**：仍为 CONDITIONAL，等 perf job 复跑结果；若预热后写侧 p95 仍 >300ms，则维持「≥8 vCPU 或 R0/QA 拆分 burst/稳态」的结论。

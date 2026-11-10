@@ -1,4 +1,4 @@
-# 70 · 部署与运维 Runbook
+﻿# 70 · 部署与运维 Runbook
 
 - 版本：v1.0　作者：R6 Release（TASK-REL-001）　日期：2026-11-09
 - 适用：`deploy/docker-compose.yml`（ADR-008 四服务：nginx / api / postgres / backup）
@@ -663,7 +663,21 @@ WEB_CONCURRENCY × (DB_POOL_SIZE + DB_MAX_OVERFLOW) < postgres max_connections�
 - 这些值都在 `deploy/.env.staging` / `.env.prod` 里配，compose 已支持同名变量透传；
 - 调大 worker 后必须复查 `pg_stat_activity` 连接数，避免打满 `max_connections`（打满表现为请求排队或 `QueuePool timeout` 500）。
 
-### 15.3 日志管道的坑（RISK-15）
+### 15.3 启动预热（WARMUP_ENABLED，docs/61 §10.4）
+
+api 进程接流量前会把连接池一次填满、装载已冻结试卷快照与已发布考试的题面视图，避免
+「部署完 100 名学生同秒开考」把冷启动成本算进 P95（实测第一波 100 并发保存 p50 766ms、
+末波 99ms，差 7.7×）。
+
+- 默认开启（`WARMUP_ENABLED=true`）；只做只读操作，**任何失败只记日志，不影响启动**；
+- 预热会**立刻**占用 `WEB_CONCURRENCY × (DB_POOL_SIZE + DB_MAX_OVERFLOW)` 条连接，预算口径不变，
+  只是从「第一批请求时创建」提前到「启动时创建」；
+- 核对：`docker compose logs api | grep startup.warmup`，每个 worker 一行
+  `{"event":"startup.warmup","pool_connections":..,"papers":..,"questions":..,"exams":..}`；
+- 依赖数据库规模：预热最多装载 64 份试卷 / 64 场考试（`app/warmup.py` 常量），大库不会因此拖慢启动；
+- 排障时可设 `WARMUP_ENABLED=false` 跳过（例如数据库刚恢复、想最快接流量）。
+
+### 15.4 日志管道的坑（RISK-15）
 
 `app/middleware/access_log.py` 用模块级锁 + 每行 `flush()` 写 stdout。**日志消费者慢时（PowerShell 管道、前台 `docker compose up`、慢 journald）会把所有请求串行化**：实测同一负载 p95 从 ~700ms 放大到 20–31s，并诱发 `QueuePool` 超时 500。
 
@@ -671,11 +685,13 @@ WEB_CONCURRENCY × (DB_POOL_SIZE + DB_MAX_OVERFLOW) < postgres max_connections�
 - 需要长时间跟踪日志用 `docker compose logs -f` 另开会话，但**不要在压测期间把容器 stdout 接到慢管道**；
 - json-file 驱动保留 `max-size/max-file` 限额（已配置）。
 
-### 15.4 性能回归怎么跑
+### 15.5 性能回归怎么跑
 
 1. Linux/CI：`docs/75-perf-baseline.md §6`（compose 同网络 + k6）；
 2. 本机无 Docker：`docs/75-perf-baseline.md §2–§4`（原生 PG + 原生 uvicorn + 同机 k6）；
 3. 判据只看 k6 `summary.json`：两个场景 `p(95)<300ms`、`http_req_failed rate<0.001`；
-4. 结论回填 `docs/61 §10.1` 与 `docs/decision-log.md`，不要在 CI 外手工改「通过」。
+4. **k6 与 API 同机时必须先做服务端侧拆解**（`docs/75 §8`，`tests/perf/analyze_server_latency.py`）：
+   服务端 p95 与 k6 p95 一致才说明是应用问题；否则先隔离压测机，不要改阈值；
+5. 结论回填 `docs/61 §10.1` / `§10.4` 与 `docs/decision-log.md`，不要在 CI 外手工改「通过」。
 
 

@@ -227,6 +227,17 @@ def clear_sessions_cache() -> None:
     _QUESTIONS_CACHE.clear()
 
 
+def warm_questions_view(db: Session, exam: Exam) -> int:
+    """把一场考试的题面视图装进缓存（启动预热用；乱序考试不缓存，返回 0）。
+
+    预热后首批学生的首次读取不再付「构建 100 个 SessionQuestionOut」的冷启动成本
+    （docs/61 §10.2.11）。
+    """
+    if bool(exam.shuffle_questions) or bool(exam.shuffle_options):
+        return 0
+    return len(_questions_for(db, exam, session_id=0))
+
+
 def _build_questions(
     db: Session,
     exam: Exam,

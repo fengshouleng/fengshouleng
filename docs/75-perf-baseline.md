@@ -1,4 +1,4 @@
-# 75 · 性能基线复测手册（PERF-001）
+﻿# 75 · 性能基线复测手册（PERF-001）
 
 > 目的：在没有可用 Docker 的环境（本机 Windows）复现「100 写 + 100 读 VU，P95 < 300ms、失败率 < 0.1%」这条 G4 门槛，
 > 并把「应用容量」与「环境/存储」两个变量分开测量。结论与实测矩阵见 `docs/61-gate-report.md §10.2`。
@@ -17,11 +17,13 @@
 | GitHub runner（4 vCPU，优化后，8 worker） | 43.8ms | 1409ms | ❌（过订阅，明确更差） |
 | GitHub runner（4 vCPU，第二轮优化，池 5+5） | 24.2ms | p50 166ms / p95 10.2s（80 次 pool timeout） | ❌（池太小） |
 | GitHub runner（4 vCPU，第二轮优化，池 12+12） | 37.5ms | p95 1176ms（p50 未单独记） | ❌（4 vCPU CPU 争用，run 间方差大） |
+| **GitHub runner（4 vCPU，服务端侧口径拆解，见 §8）** | **38.5ms ✅** | save 服务端 p95 **1026ms**、start 服务端 p95 1044ms | ❌（但已定位：冷启动 + 100 并发突发） |
 
 - **读路径**是应用容量问题：worker 数决定（本机 4 worker 即达标；容器内 8 worker 读 P95 14ms）。
 - **写/开场尾延迟**由 PostgreSQL 提交落盘（WAL fsync）主导：本机原生（NTFS）与 Docker Desktop 容器（VM 磁盘仍是 Windows NTFS 上的 VHDX）**都**出现 300–900ms 的开场 COMMIT 串行；
   把提交改成异步后同类负载 p95 降到 217ms（诊断）。**生产必须保持 fsync=on，因此必须在真实 Linux/SSD 上复核**（CI `perf` job 或 §6 命令）。
 - 端口代理不是瓶颈（Docker 修复后实测宿主 50 并发连接 50/50 成功）；容器内压测建议把 k6 放进容器网络（见 §6）。
+- **k6 与被测同机时，k6 的数字含压测机排队**；判读前先用 §8 的服务端侧拆解确认「应用真的慢」，别靠调阈值。
 
 ## 1. 前置条件
 
@@ -131,3 +133,30 @@ k6 run tests/perf/k6/exam_flow.js
 4. **stdout 捕获**：见 §3；不要把 API/容器日志接到慢消费者上做压测。
 5. **`--workers` 在 Windows 下用 spawn**：子进程日志可能不落重定向文件（本次实测 access 日志为空，不影响压测结果）；Linux 无此现象。
 6. **每轮重造数据**：旧考试的会话/交卷状态会让第二轮结果失真。
+7. **启动预热的日志走 stdout JSON**：uvicorn 只配置自己的 logger，应用 logger 的 INFO 会被丢掉；
+   因此 `app/warmup.py` 直接往 stdout 写一行 `{"event":"startup.warmup",...}`（与访问日志同口径）。
+   核对：`docker compose logs api | grep startup.warmup`，每个 worker 应有一行。
+8. **预热与连接预算**：预热会立刻占满 `WEB_CONCURRENCY × (DB_POOL_SIZE + DB_MAX_OVERFLOW)` 条连接，
+   必须仍小于 `max_connections`；CI perf 覆盖文件已把 PG 放宽到 200 并配 15+15（4×30=120）。
+9. **预热失败不会让服务起不来**：`WARMUP_ENABLED=false` 可关闭；预热异常只打日志（降级契约有单测）。
+
+## 8. 服务端侧口径拆解（k6 与 API 同机时必做）
+
+k6 的 `http_req_duration` **包含压测机自身的调度排队**；当 k6 + postgres + api 挤在同一台 4 vCPU
+runner 上时，k6 侧的数字无法区分「应用慢」与「压测机饿」。`app/middleware/access_log.py` 对每个请求都记了
+服务端侧 `latency_ms`，perf job 失败时会归档容器日志（`reports/perf/**`），可直接拿来对照：
+
+```bash
+python tests/perf/analyze_server_latency.py <compose-logs.txt> --json reports/perf/server-side-latency.json
+```
+
+输出：按路由族（save / read / start / login / other）的 count / p50 / p90 / p95 / p99 / max，
+外加按 5s 时间桶的 save、read 侧 p95——**桶视图是识别「冷启动 + 突发」的关键**：
+run `42859094367` 里同一规模的 100 并发保存，t≈20s 桶 p50=766ms，t≈170s 桶 p50=99ms（差 7.7×）。
+
+判读顺序（不要跳步）：
+
+1. 服务端 p95 与 k6 p95 数量级一致 → 应用真的慢，去做 §5 的容量/落盘对照；
+2. 服务端 p95 远小于 k6 p95 → 压测机排队，先把 k6 挪开（独立机器/容器资源隔离）再谈阈值；
+3. 桶视图里前 30s 明显差于末段 → 冷启动，启用/核对 `WARMUP_ENABLED=true` 的启动预热（见 §7.7）。
+

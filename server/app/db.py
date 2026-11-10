@@ -58,16 +58,18 @@ def get_sessionmaker() -> sessionmaker[Session]:
 def reset_engine() -> None:
     """清空缓存的 engine / sessionmaker（测试切换数据库或配置后调用）。
 
-    同时清空业务层的进程内缓存（冻结题面视图），否则测试用同一 paper_id
+    同时清空业务层的进程内缓存（冻结题面视图、冻结快照），否则测试用同一 paper_id
     在不同数据库之间会命中上一条用例的缓存。
     """
     get_sessionmaker.cache_clear()
     get_engine.cache_clear()
     # 延迟导入，避免 db <-> service 循环依赖
     try:
+        from app.scoring.service import clear_snapshot_cache
         from app.sessions.service import clear_sessions_cache
 
         clear_sessions_cache()
+        clear_snapshot_cache()
     except Exception:  # pragma: no cover - 仅测试/运维路径，缓存清理失败不应中断
         pass
 
