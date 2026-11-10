@@ -1,0 +1,45 @@
+task_id: TASK-FE-005
+title: 成绩、考试汇总与错题本页
+wbs_ref: T2.6
+owner_role: frontend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-FE-000, TASK-BE-005]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1sessions~1{session_id}~1result"
+  - "contracts/openapi.yaml#/paths/~1me~1results"
+  - "contracts/openapi.yaml#/paths/~1me~1wrong-questions"
+  - "contracts/openapi.yaml#/paths/~1exams~1{exam_id}~1results"
+
+write_scope:
+  - web/src/pages/result/**
+  - web/src/pages/wrong/**（若与 result 合并可放同目录）
+  - web/tests/result.test.tsx
+read_scope:
+  - contracts/openapi.yaml
+  - docs/00-prd.md
+  - docs/12-permission-matrix.md
+
+must:
+  - 学生成绩页：总分、逐题对错与解析（selected vs correct_answer）、未交卷 409 提示
+  - 我的成绩列表（分页）与错题本（分页、wrong_count 展示）
+  - 教师考试汇总页：提交数/平均分/学生明细（仅自己的考试），403 错误提示
+  - 成绩查询路由受角色守卫；学生访问他人 result 的 403 有友好提示
+  - data-testid：result-score、result-list、wrong-list、teacher-summary-table
+
+acceptance:
+  - "组件测试：成绩渲染、未交卷提示、教师汇总、越权错误提示"
+  - "pnpm lint / tsc --noEmit / build 通过"
+
+forbidden:
+  - 修改 contracts/**、server/**、api/client.ts
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pnpm test -- result && pnpm lint && pnpm tsc --noEmit", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-QA-001 E2E 可覆盖全链路"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

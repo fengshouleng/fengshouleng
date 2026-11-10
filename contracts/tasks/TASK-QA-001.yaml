@@ -1,0 +1,44 @@
+task_id: TASK-QA-001
+title: E2E 关键链路（登录→建题→组卷→发考试→作答→交卷→判分→成绩/错题本）
+wbs_ref: T3.2
+owner_role: qa-verify
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-001, TASK-BE-002, TASK-BE-003, TASK-BE-004, TASK-BE-005, TASK-FE-001, TASK-FE-002, TASK-FE-003, TASK-FE-004, TASK-FE-005]
+contract_refs:
+  - "contracts/openapi.yaml"
+
+write_scope:
+  - tests/e2e/**
+  - reports/**
+read_scope:
+  - contracts/openapi.yaml
+  - docs/00-prd.md
+  - docs/60-test-plan.md
+  - web/src/**
+
+must:
+  - Playwright 配置 + 独立测试环境（docker compose up 测试栈，或本地 uvicorn+vite 由 CI service 起）
+  - 用例 T-E2E-01：教师登录→创建 3 题→组卷（合计 100）→发布考试（时间窗覆盖当前）
+  - 用例 T-E2E-02：学生登录→开始考试→作答→刷新恢复→交卷→看到成绩
+  - 用例 T-E2E-03：重复交卷/重复开始会话幂等（同一成绩、不重复造会话）
+  - 用例 T-E2E-04：到时自动交卷（可注入短 duration 或冻结时间）
+  - 证据：trace/video/截图存 reports/e2e/{timestamp}/；失败必须附 DOM 快照
+
+acceptance:
+  - "全部用例通过且录像/截图归档"
+  - "与 docs/60-test-plan.md 的用例 ID 一致"
+  - "不依赖固定日期/时钟，使用相对时间构造考试窗口"
+
+forbidden:
+  - 修改 server/**、web/**、contracts/**（发现缺陷写缺陷单）
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pnpm exec playwright test tests/e2e", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-QA-002 安全负例"
+
+circuit_breaker: { max_tool_calls: 60, timeout_min: 30 }

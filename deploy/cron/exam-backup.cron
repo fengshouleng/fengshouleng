@@ -1,0 +1,41 @@
+# deploy/cron/exam-backup.cron — 宿主机 crontab 模板（TASK-REL-002）
+#
+# 安装（二选一）：
+#   1) 全量安装（推荐）：crontab deploy/cron/exam-backup.cron
+#      注意：这会替换当前用户的整个 crontab；已有任务请用 `crontab -e` 手工追加。
+#   2) 追加：crontab -l > /tmp/cur.cron && cat deploy/cron/exam-backup.cron >> /tmp/cur.cron \
+#            && crontab /tmp/cur.cron
+#
+# 前置：
+#   - 把下面 /opt/exam 换成真实仓库路径（绝对路径，cron 的 PATH 很窄）；
+#   - `deploy/.env.staging` 已存在（cp deploy/.env.example 后填写），或改用 .env.prod；
+#   - 先手工跑一次，确认输出与退出码：
+#       bash deploy/cron/exam-backup-cron.sh status
+#
+# 时区：cron 使用**宿主本地时区**；容器内时间戳一律 UTC（backup.sh 用 date -u）。
+#       若宿主不是 UTC，请把下面时间换算成本地时间，并在注释里写明换算。
+#
+# 与容器内 loop.sh 的分工：
+#   - 日备由 backup 容器内的 loop.sh 完成（启动即备，之后每 BACKUP_INTERVAL_SECONDS 秒）；
+#   - 本文件负责“容器挂了也能发现”的新鲜度检查、每周异地导出、每月恢复演练。
+#   - 不要同时启用“容器 loop 日备”和下面注释掉的 02:00 定点备份，否则一天会备份两次。
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+COMPOSE_FILE=/opt/exam/deploy/docker-compose.yml
+ENV_FILE=/opt/exam/deploy/.env.staging
+
+# 每小时第 5 分：新鲜度检查（>26h 无成功备份 → 退出非 0 + 写 deploy/evidence/cron/alert_stale_backup.log）
+5 * * * * cd /opt/exam && bash deploy/cron/exam-backup-cron.sh freshness
+
+# 每周日 03:10：把最新备份导出到宿主机/异地目录并校验 sha256
+# （BACKUP_REMOTE_DIR 未设置时默认写到 deploy/evidence/offsite，仅作“换盘”副本，不等于异地机房）
+10 3 * * 0 cd /opt/exam && BACKUP_REMOTE_DIR=/mnt/backup-offsite bash deploy/cron/exam-backup-cron.sh export
+
+# 每月 1 日 04:00：恢复演练（写入容器 /backups/drill-logs；通过后回填 docs/71 §4.2）
+0 4 1 * * cd /opt/exam && bash deploy/cron/exam-backup-cron.sh drill
+
+# 可选：若明确要求“每日 02:00 定点备份”，先停用容器 loop（需改 compose 的 entrypoint 或
+# BACKUP_INTERVAL_SECONDS），再启用下一行，避免重复备份。
+# 0 2 * * * cd /opt/exam && bash deploy/cron/exam-backup-cron.sh backup

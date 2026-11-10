@@ -1,0 +1,59 @@
+task_id: TASK-BE-001
+title: 账号/会话/RBAC（登录、登出、me、CSRF、用户管理）
+wbs_ref: T1.1
+owner_role: backend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-000]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1auth~1login"
+  - "contracts/openapi.yaml#/paths/~1auth~1logout"
+  - "contracts/openapi.yaml#/paths/~1auth~1me"
+  - "contracts/openapi.yaml#/paths/~1users"
+  - "contracts/openapi.yaml#/paths/~1users~1{user_id}"
+  - "contracts/openapi.yaml#/components/schemas/User"
+
+write_scope:
+  - server/app/auth/**
+  - server/app/users/**
+  - server/app/models/user.py
+  - server/app/models/auth_session.py
+  - server/migrations/versions/*_auth.py
+  - server/tests/auth/**
+  - server/tests/users/**
+read_scope:
+  - contracts/openapi.yaml
+  - docs/11-data-model.md
+  - docs/12-permission-matrix.md
+  - server/app/main.py
+  - server/app/db.py
+
+must:
+  - users / auth_sessions 两表迁移（字段与约束按 docs/11-data-model.md）
+  - POST /auth/login：argon2id 校验、失败 401 AUTH_INVALID_CREDENTIALS（不区分账号是否存在）、成功下发 HttpOnly session_id Cookie + 返回 {user, csrf_token}
+  - POST /auth/logout：吊销会话（revoked_at），204
+  - GET /auth/me：返回 {user, csrf_token}；未登录 401 AUTH_REQUIRED
+  - 会话中间件：从 Cookie 解析会话、校验过期/吊销、注入 request.state.user
+  - CSRF 校验：非 GET 请求校验 X-CSRF-Token（缺失/不匹配 403 CSRF_INVALID）
+  - RBAC 依赖：require_role(student|teacher|admin)；admin 专属 /users 接口
+  - GET/POST /users、PATCH /users/{id}（admin）；停用账号时吊销其全部会话
+  - 审计：登录成功/失败、用户创建/修改写 audit_logs（action 如 auth.login / user.create）
+
+acceptance:
+  - "pytest：登录成功/失败、会话过期、CSRF 缺失、学生访问 /users 403、停用账号后 401 全部通过"
+  - "契约测试：/auth/* 与 /users 响应 schema 与错误码一致"
+  - "ruff/mypy 通过；diff 未越界"
+
+forbidden:
+  - 修改 contracts/**、其他模块目录
+  - 在日志或审计中记录明文密码
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pytest -q server/tests/auth server/tests/users", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-BE-003 依赖本卡；前端 TASK-FE-001 依赖本卡契约"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

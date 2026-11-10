@@ -1,0 +1,70 @@
+task_id: TASK-BE-004
+title: 考试会话与交卷判分（exams / sessions / answers / submit，关键路径）
+wbs_ref: T1.4 + T1.5（同事务，判分随交卷落库）
+owner_role: backend-impl
+context: spawn
+model_tier: strong
+depends_on: [TASK-BE-001, TASK-BE-003]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1exams"
+  - "contracts/openapi.yaml#/paths/~1exams~1{exam_id}"
+  - "contracts/openapi.yaml#/paths/~1exams~1{exam_id}~1sessions"
+  - "contracts/openapi.yaml#/paths/~1sessions~1{session_id}"
+  - "contracts/openapi.yaml#/paths/~1sessions~1{session_id}~1answers"
+  - "contracts/openapi.yaml#/paths/~1sessions~1{session_id}~1submit"
+  - "contracts/openapi.yaml#/paths/~1me~1exams"
+  - "contracts/openapi.yaml#/components/schemas/SessionState"
+  - "contracts/openapi.yaml#/components/schemas/SubmitResult"
+  - "contracts/openapi.yaml#/components/schemas/MyExamPage"
+contract_version: 1.0.1
+
+write_scope:
+  - server/app/exams/**
+  - server/app/sessions/**
+  - server/app/scoring/**
+  - server/app/models/exam.py
+  - server/app/models/exam_session.py
+  - server/app/models/answer.py
+  - server/migrations/versions/*_exams.py
+  - server/tests/exams/**
+  - server/tests/sessions/**
+read_scope:
+  - contracts/openapi.yaml
+  - docs/10-arch.md
+  - docs/11-data-model.md
+  - docs/12-permission-matrix.md
+  - docs/13-contract-changes.md
+  - server/app/papers/service.py
+
+must:
+  - exams / exam_sessions / answers 三表迁移（含 UNIQUE(exam_id, student_id)、deadline_at、last_client_seq、unique 防重复）
+  - POST /exams：校验时间窗、duration、paper 存在且 draft；publish=true 时调用 freeze_paper 与快照（写 papers.frozen_at、exams.snapshot_version）；GET/PATCH /exams（状态机 draft→published→closed，非法迁移 409）；返回 Exam.created_by
+  - "POST /exams/{id}/sessions（契约 v1.0.1 C-22 逐码）：仅 student；首次 201 建会话；已存在（含已交卷/已到期）200 恢复且不重算 deadline；now<start_at 409 EXAM_NOT_STARTED；now>end_at 或 status=closed 409 EXAM_EXPIRED；不存在/draft/不可见 404 NOT_FOUND"
+  - "GET /sessions/{id}（v1.0.1 C-01/C-13）：归属校验；返回题目（不含答案、按 shuffle 乱序）+ server_time + answers（已保存答案，required）+ last_client_seq + submitted_at + score；到期时同步触发自动交卷判分并返回 status=expired + score（HTTP 200，不返回 409）"
+  - "PUT /sessions/{id}/answers：校验 in_progress 且未超时；client_seq 单调（旧 seq 不覆盖，返回当前 saved_seq + applied=false）；行锁或等价串行化；upsert answers"
+  - "POST /sessions/{id}/submit：幂等——in_progress→submitted 原子迁移，重复提交/已自动交卷返回既有成绩（200，replayed=true，无 409 分支）；事务内判分："
+  - "判分细则：single/judge 答案集合完全相等=满分；multiple+all_or_nothing 完全相等=满分否则 0；multiple+partial 无错选时 round(选中正确数/正确总数 × points, 2)，有错选 0；写 answers.is_correct / earned_points、exam_sessions.score、submitted_at"
+  - 到时自动交卷：任何读写会话接口检测超时即触发 expired 迁移与判分（幂等）；expired 语义等价 submitted（成绩与逐题结果可读）
+  - "GET /me/exams（v1.0.1 C-02）：仅 student；返回 published 全部考试 + 该生已有会话的 closed 考试；字段含 session_status（not_started/in_progress/submitted/expired）与 session_id/score/total_points/submitted_at；不含 draft；教师/admin 403"
+  - 审计：exam.create/publish/close、session.start/save/submit（AuditLog.actor_id/ip 必填，v1.0.1 C-05）
+
+acceptance:
+  - "pytest：AC-11/12/13/14/15/16/17 对应接口用例全绿"
+  - "幂等专项：并发双提交只产生一条成绩（唯一约束 + 状态迁移）；重复提交返回 200 + 同一 score 且 replayed=true（不得有 409 分支）；SQLite 下用串行化等价方案"
+  - "恢复专项：GET /sessions/{id} 返回 answers/submitted_at；到期会话返回 200 + status=expired + score（契约 v1.0.1 C-01/C-13）"
+  - "契约测试：按 contracts/openapi.yaml v1.0.1 校验 6 组接口 schema/错误码一致（含 /me/exams、SubmitResult.replayed）"
+  - "判分公式对边界（少选/错选/全对/空答）有表驱动用例"
+
+forbidden:
+  - 修改 contracts/**、papers 模块、其他角色目录
+  - 跳过判分直接返回 0 分占位
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pytest -q server/tests/sessions server/tests/exams", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-BE-005 读取成绩；TASK-FE-004 考试页依赖本卡"
+
+circuit_breaker: { max_tool_calls: 60, timeout_min: 25 }

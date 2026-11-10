@@ -1,0 +1,61 @@
+task_id: TASK-FE-004
+title: 考试答题页（倒计时/自动保存/断网恢复/交卷确认，关键路径）
+wbs_ref: T2.5
+owner_role: frontend-impl
+context: spawn
+model_tier: strong
+depends_on: [TASK-FE-000, TASK-BE-004]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1exams~1{exam_id}~1sessions"
+  - "contracts/openapi.yaml#/paths/~1sessions~1{session_id}"
+  - "contracts/openapi.yaml#/paths/~1sessions~1{session_id}~1answers"
+  - "contracts/openapi.yaml#/paths/~1sessions~1{session_id}~1submit"
+  - "contracts/openapi.yaml#/paths/~1me~1exams"
+  - "contracts/openapi.yaml#/components/schemas/SessionState"
+  - "contracts/openapi.yaml#/components/schemas/SubmitResult"
+  - "contracts/openapi.yaml#/components/schemas/MyExamItem"
+contract_version: 1.0.2
+
+write_scope:
+  - web/src/pages/exam/**
+  - web/src/pages/student/**（我的考试列表）
+  - web/src/hooks/useExamSession.ts
+  - web/src/components/AppLayout.tsx（仅新增学生「我的考试」菜单）
+  - web/src/routes.tsx（仅挂载相关路由）
+  - web/tests/exam.test.tsx
+read_scope:
+  - contracts/openapi.yaml
+  - docs/00-prd.md
+  - docs/10-arch.md
+  - docs/13-contract-changes.md
+  - web/src/api/client.ts
+
+must:
+  - "考试入口：用 GET /me/exams 列出可考/已考（session_status：not_started/in_progress/submitted/expired + score）；点击进入调 POST /exams/{id}/sessions（201 新建 / 200 恢复），展示题目列表与答题卡"
+  - 倒计时：用 server_time 校时，基于 deadline_at 计算剩余；到 0 自动提交并提示
+  - 自动保存：答案变更后 debounce（≥30s 或切题时触发），client_seq 单调递增；失败重试且不覆盖新答案；以响应 applied=false 表示旧 seq 被忽略（静默，不报错）
+  - 断网恢复：online/offline 事件 + 失败重试队列；恢复后立即保存一次；提示「答案已保存/保存失败」
+  - 交卷：二次确认弹窗，提交后跳转成绩页；重复点击幂等（按钮 loading 禁用）；按 SubmitResult.replayed=true 提示「已交卷，显示原成绩」，不得依赖 409 判断（v1.0.1 已移除 submit 409）
+  - "刷新页面恢复：进入时若已有会话则恢复已答内容——契约 v1.0.1 已提供 SessionState.answers（required）+ submitted_at，直接回填，不得前端伪造"
+  - 到期处理：任何会话响应 status=expired / score 非空即视为已自动交卷，跳成绩页（GET /sessions/{id}/result），不解析错误体
+  - 关键 data-testid：exam-start、answer-{question_id}-{key}、exam-save-status、exam-submit、exam-confirm-submit
+
+acceptance:
+  - "组件测试：倒计时归零自动提交、client_seq 递增、applied=false 静默、交卷幂等点击（replayed=true 提示）、401 跳转"
+  - "刷新恢复：mock SessionState.answers 后选项正确回填（契约 v1.0.1 C-01，TASK-FE-004 原阻断解除）"
+  - "pnpm lint / tsc --noEmit / build 通过"
+  - "关键交互均有 data-testid 供 E2E 使用"
+
+forbidden:
+  - 修改契约（发现契约与实现不符时返回 contract_issue；v1.0.1 已提供 SessionState.answers，原阻断解除）
+  - 修改 server/**、contracts/**
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pnpm test -- exam && pnpm lint && pnpm tsc --noEmit", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-QA-001 E2E 关键链路"
+
+circuit_breaker: { max_tool_calls: 60, timeout_min: 25 }

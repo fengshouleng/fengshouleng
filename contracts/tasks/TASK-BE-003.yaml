@@ -1,0 +1,52 @@
+task_id: TASK-BE-003
+title: 组卷与试卷快照冻结（papers）
+wbs_ref: T1.3
+owner_role: backend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-002]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1papers"
+  - "contracts/openapi.yaml#/paths/~1papers~1{paper_id}"
+  - "contracts/openapi.yaml#/components/schemas/Paper"
+
+write_scope:
+  - server/app/papers/**
+  - server/app/models/paper.py
+  - server/app/models/paper_question.py
+  - server/migrations/versions/*_papers.py
+  - server/tests/papers/**
+read_scope:
+  - contracts/openapi.yaml
+  - docs/11-data-model.md
+  - docs/10-arch.md
+  - docs/00-prd.md
+
+must:
+  - papers / paper_questions 表迁移（含 partial_rule、points>0、同试卷 order_no 唯一）
+  - GET/POST /papers、GET/PUT/DELETE /papers/{id}；教师仅自己的，admin 全部
+  - 创建/更新时校验：题目均存在且未删除、题目归属合法、order_no 连续唯一、total_points = Σpoints（服务端计算，拒绝客户端传错）
+  - 多选题未显式给 partial_rule 时默认 all_or_nothing
+  - status=draft 可改；status=frozen 时 PUT/DELETE 返回 409 PAPER_FROZEN
+  - freeze_paper(paper_id) 服务函数：写 frozen_snapshot（题目/选项/答案/分值/规则的深拷贝）+ status=frozen，供 TASK-BE-004 调用
+  - DELETE：被 exams 引用时 409
+  - 审计：paper.create/update/delete/freeze
+
+acceptance:
+  - "pytest：分值合计校验、重复题拒绝、冻结后修改 409、引用删除 409、归属 403 全部通过"
+  - "契约测试：/papers 系列 schema/错误码一致"
+  - "frozen_snapshot 结构与 docs/10-arch.md 判分约定一致，供 BE-004 直接消费"
+
+forbidden:
+  - 修改 contracts/**、其他模块目录
+  - 在 paper 层实现判分逻辑（判分在 BE-004）
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pytest -q server/tests/papers", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-BE-004 依赖本卡的 frozen_snapshot"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

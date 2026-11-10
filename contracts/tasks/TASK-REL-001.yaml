@@ -1,0 +1,46 @@
+task_id: TASK-REL-001
+title: 部署骨架与 staging（compose/nginx/Dockerfile/健康检查）
+wbs_ref: T0.6 + T4.2
+owner_role: release-sre
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-000, TASK-FE-000]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1healthz"
+
+write_scope:
+  - deploy/**
+  - docs/70-runbook.md
+  - docs/71-backup-restore.md
+read_scope:
+  - server/pyproject.toml
+  - web/package.json
+  - docs/10-arch.md
+  - contracts/openapi.yaml
+
+must:
+  - deploy/docker-compose.yml：nginx、api、postgres、backup 四服务（ADR-008），healthcheck、depends_on、命名卷、环境变量分离（.env.example）
+  - deploy/Dockerfile.api（多阶段、非 root、固定基础镜像版本）与 deploy/Dockerfile.web（build 后由 nginx 托管静态资源）
+  - deploy/nginx.conf：TLS 终止占位、/api 反代、静态资源缓存头、client_max_body_size 适配导入
+  - docs/70-runbook.md：首次部署、升级、回滚、日志排障、健康检查
+  - docs/71-backup-restore.md：pg_dump 策略 + 恢复步骤 + 演练记录模板
+  - staging 冒烟命令（curl /api/healthz、登录、建题）与证据路径
+
+acceptance:
+  - "compose 配置结构自检通过（services/volumes/networks/healthcheck 齐备）"
+  - "runbook 步骤可被另一人按序执行（无隐式前置）"
+  - "不写入真实密钥；.env.example 只含占位"
+
+forbidden:
+  - 修改 server/**、web/**、contracts/**
+  - 未经审批直接部署生产
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "docker compose config（CI 执行）", passed: 0, failed: 0, verified: false }
+  open_questions: []
+  next: "TASK-REL-002 备份/监控；T4.5 上线"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 20 }

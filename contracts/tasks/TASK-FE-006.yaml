@@ -1,0 +1,41 @@
+task_id: TASK-FE-006
+title: 管理后台（账号管理 + 审计日志查看，P2 可砍）
+wbs_ref: T2.7
+owner_role: frontend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-FE-000, TASK-BE-001, TASK-BE-006]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1users"
+  - "contracts/openapi.yaml#/paths/~1users~1{user_id}"
+  - "contracts/openapi.yaml#/paths/~1audit-logs"
+
+write_scope:
+  - web/src/pages/admin/**
+  - web/tests/admin.test.tsx
+read_scope:
+  - contracts/openapi.yaml
+  - docs/12-permission-matrix.md
+
+must:
+  - 用户列表（角色筛选、分页）、创建账号、修改角色、停用/启用、重置密码
+  - 审计日志页：action/时间范围筛选、分页、只读
+  - 仅 admin 路由可进（RequireRole）；非 admin 显示 403 提示
+  - data-testid：admin-users-table、admin-user-disable、admin-audit-table
+
+acceptance:
+  - "组件测试：列表/创建/停用确认/审计分页/角色守卫"
+  - "pnpm lint / tsc --noEmit / build 通过"
+
+forbidden:
+  - 修改 contracts/**、server/**、api/client.ts
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pnpm test -- admin && pnpm lint && pnpm tsc --noEmit", passed: 0, failed: 0 }
+  open_questions: []
+  next: "P2：若进度紧张，按范围冻结预案优先砍此卡"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

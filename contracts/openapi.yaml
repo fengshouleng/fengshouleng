@@ -1,0 +1,1718 @@
+openapi: 3.1.0
+info:
+  title: 选择题答题系统 API
+  version: 1.0.3
+  description: |
+    契约版本 v1.0.3（2026-11-09，R2 Architect）。**V1 冻结前的最后一次契约修订**：关闭
+    docs/13-contract-changes.md §8 的三条挂起待办（P-009 / P-010 / P-011），并统一一处权限判定口径
+    （QA-002 指出的「他人 draft 资源 403/404」张力）。逐条登记见 docs/13-contract-changes.md
+    **CHG-033..CHG-036**，决策与影响见 docs/10-arch.md **ADR-011**。
+    **本版之后契约进入冻结终态（V1）：只允许 CHG 级变更——先登记 CHG + ADR，再改契约与版本号。**
+    **G2 须按 v1.0.3 重新校验后方可继续 G4。**
+
+    变更摘要（v1.0.2 → v1.0.3）：
+    - CHG-033（P-009）**认证优先**：无有效会话 → **401 `AUTH_REQUIRED`**，**优先于 CSRF 校验与参数校验**
+      （未认证请求即使缺 `X-CSRF-Token` 或参数非法，也返回 401，而不是 403/422）。写入
+      `components.securitySchemes.sessionCookie.description` 与全部写接口 description。
+    - CHG-034（P-010）`GET /healthz` 的 200 响应**显式声明 `db: {type: string}` 并加入 `required`**
+      （实现执行 `SELECT 1` 探针后返回 `db:"ok"`；探针失败整体 503 统一 Error 体，不返回该对象）。
+    - CHG-035（P-011）`AuditLog.actor_id` 改为 `type: [integer, "null"]`：系统操作 / CLI 记录为 **null**
+      （BE-006 传 `actor_id=None`），字段仍必填（**总是出现**，只是值可为 null）；`ip` 仍为必填字符串，
+      **系统操作记 `"-"`**。`AuditLogPage` 同步该口径。
+    - CHG-036（QA-002）**可见性判定统一**：他人 draft / 未发布资源（**学生视角不可见**）→ **404**；
+      可见但非本人 → **403**；角色不符 → **403**。教师对同角色他人的题目/试卷/考试（**含 draft**）一律
+      **403**（教师管理视图视为可见），学生请求 draft 考试 → **404**。详见 docs/12 §2 与 ADR-011。
+    - 校验：`Error.code` 枚举**已含** `NOT_SUBMITTED`（`server/app/errors.py` 在用）与 `IMPORT_PARTIAL`；
+      本轮**不改**枚举（仍 16 值），无新增/删除错误码。
+
+    兼容性：CHG-033 / CHG-036 为**语义澄清**（与中间件顺序、归属校验实现一致，无响应结构变化）；
+    CHG-034 为**响应必填新增**（healthz 增加 `db`）；CHG-035 放宽 `actor_id`（`integer` → `integer|null`），
+    读取方需容忍 null。无接口新增/删除。
+
+    v1.0.2 变更摘要（v1.0.1 → v1.0.2，历史）：
+    - CHG-024 `MyExamPage.server_time` 进 `required`；`GET /me/exams` description 写死「前端以
+      `server_time` 校时；`session_status=in_progress` 且已过 `deadline_at` 时，服务端在读取时按到期
+      规则结算，返回 `expired` 并带 `score`」（与 `GET /sessions/{id}` 的 200+expired 语义一致）。
+    - CHG-025 上限自洽：`PaperQuestion.points.maximum` 1000 → **100**；`Paper.total_points.maximum`
+      保持 **10000**（100 题 × 100 分 = 10000，恰不越界）。
+    - CHG-026 `PaperCreate` 描述去矛盾：请求**只含** `title` + `questions`（每题 `points`）；
+      `total_points` 由服务端计算并返回；服务端校验 `1 ≤ Σpoints ≤ 10000`，越界/非法 → 422。
+    - CHG-027 快照条件不变量写进 schema description（字段仍 optional，不引入 if/then）：
+      `Paper.status=frozen` 时 `frozen_at` 必返回；`Exam.status ∈ {published, closed}` 时
+      `snapshot_version` 必返回；draft 阶段可为空，QA 按 `status` 条件断言。
+    - CHG-028 可观测字段必需化：`SubmitResult.replayed` 与 `AnswerSaveResponse.applied` 进 `required`
+      （服务端**总是**返回 true/false）；`SessionState.score/submitted_at` 保持 optional，但
+      description 写死「`status=submitted|expired` 时必有值」。
+    - CHG-029 logout 语义统一：有效会话 → **204**；无有效会话（未登录/已失效/已停用）→ **401**
+      `AUTH_REQUIRED`；删除「已失效会话返回 204」，并写明**认证先于 CSRF**（401 优先于 403）。
+    - CHG-030 教师不可读单会话结果：`GET /sessions/{id}/result` 仅学生本人（教师一律 403，
+      教师走 `GET /exams/{id}/results` 读自己考试的汇总）；docs/12 权限矩阵同步。
+    - CHG-031 `ExamResultSummary.average_score` 除零口径：无已判分会话时返回 **0**（仍 required number）。
+    - CHG-032 废弃码清理：`ALREADY_SUBMITTED` 从 `Error.code` 枚举中移除（v1.0.1 起交卷已幂等 200）。
+
+    v1.0.2 语义修正（非纯增量，旧客户端/实现需重读）：CHG-024/028 的必需化项（`server_time`/`replayed`/
+    `applied`）、CHG-029 logout 401 口径（不再「恒 204」）、CHG-030 教师结果权限（由 ✅ 改 ❌）、
+    CHG-032 `ALREADY_SUBMITTED` 移除（实现若返回该码即违契，映射为 `CONFLICT`）。
+
+    v1.0.1 变更摘要（C-01..C-22）仍以 docs/13-contract-changes.md §1–§2 与 ADR-009 为准，本处不再重复。
+
+    约定：
+    - 认证：服务端 Session，HttpOnly Cookie `session_id`（8h 过期）
+    - **判定顺序（v1.0.3 / CHG-033 / CHG-036，全局适用）**：① 无有效会话 → **401 `AUTH_REQUIRED`**
+      （**优先于 CSRF 校验与参数校验**：未认证请求即使缺 `X-CSRF-Token` 或参数非法，也返回 401，
+      不是 403/422）→ ② 已认证但写接口 CSRF 缺失/不匹配 → 403 `CSRF_INVALID` → ③ 角色不符 →
+      403 `FORBIDDEN` → ④ 角色允许、资源**可见**但非本人/非其资源 → 403 `FORBIDDEN` → ⑤ 资源不可见
+      （学生视角的 draft/未发布资源、软删除、不存在的 id）→ 404 `NOT_FOUND`。
+    - CSRF：只在**已认证会话**上校验。所有非 GET 请求必须带 `X-CSRF-Token`（来自 /auth/me）；
+      有会话但缺失/不匹配 → 403 `CSRF_INVALID`；**没有有效会话时先返回 401**（认证先于 CSRF）
+    - 统一错误体：{ code, message, request_id }，`code` 取值见 `components.schemas.Error` 枚举
+    - 时间：ISO 8601 UTC；分数：number，保留 2 位小数（`multipleOf: 0.01`）
+    - 分页：page 从 1 开始，page_size 默认 20、最大 100
+servers:
+  - url: /api
+    description: 通过 Nginx 反向代理的 API 前缀
+tags:
+  - name: system
+  - name: auth
+  - name: users
+  - name: questions
+  - name: papers
+  - name: exams
+  - name: sessions
+  - name: me
+  - name: audit
+
+security:
+  - sessionCookie: []
+
+paths:
+  /healthz:
+    get:
+      tags: [system]
+      summary: 健康检查
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          description: |
+            服务存活且依赖可用（DB 可连接）。**`status` 与 `db` 必填**（v1.0.3 / CHG-034 / P-010）：
+            实现每次请求执行 `SELECT 1` 探针，通过后返回 `{status:"ok", version, db:"ok"}`。
+            `version` 由实现返回但保持 optional（向后兼容，QA 断言 `required` 时只强制 `status`/`db`）。
+            探针失败时本接口整体返回 503（统一 Error），**不返回**本对象。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, db]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  version: { type: string }
+                  db:
+                    type: string
+                    description: 数据库探针结果（`SELECT 1` 通过）；实现固定返回 `"ok"`（CHG-034）。探针失败时走 503，不出现本字段的本对象
+        '503':
+          description: 依赖不可用（DB 连接失败/迁移未就绪）；deploy 健康检查据此判定实例不可用。C-19：返回统一 Error 体（code=INTERNAL_ERROR）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: 登录
+      description: 成功返回 `{user, csrf_token}` 并下发 HttpOnly `session_id`；失败**只有**一种口径（C-07）：
+        401 + 固定 `code=AUTH_INVALID_CREDENTIALS` + 固定 message“用户名或密码错误”，
+        不区分账号不存在/密码错误/账号停用，响应耗时由实现保证恒定（见 AC-02）。
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: 登录成功，Set-Cookie 下发 session_id（HttpOnly, Secure, SameSite=Lax, 8h）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/InvalidCredentials' }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: 登出并吊销会话
+      description: |
+        吊销当前会话（`auth_sessions.revoked_at`）并清 Cookie（`Set-Cookie` 置过期）。
+        语义统一（v1.0.2 / CHG-029，**不再声称“已失效会话返回 204”**）：
+
+        | 场景 | 状态码 | 说明 |
+        |---|---|---|
+        | 有效会话 | **204** | 吊销当前会话并清 Cookie |
+        | 无有效会话（未登录 / 已吊销 / 8h 过期 / 账号停用） | **401** | `code=AUTH_REQUIRED` |
+
+        - **认证先于 CSRF**（与中间件实现一致，v1.0.3 / CHG-033 扩展为「401 优先于 CSRF **与参数校验**」）：
+          先校验会话（无会话 → 401），再校验 `X-CSRF-Token`（有会话但 token 缺失/不匹配 → 403 `CSRF_INVALID`）。
+          故未认证请求即使不带 CSRF 头，也返回 401 而不是 403；本接口无请求体，故不涉及参数校验分支。
+        - 因此本接口**不是「恒 204」的幂等接口**：同一 Cookie 第二次登出已无有效会话 → 401，
+          客户端应把 401 视为“已登出”并清空本地状态。
+      operationId: logout
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: 已登出（有效会话被吊销并清 Cookie） }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfForbidden' }
+
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: 当前登录用户与 CSRF token
+      operationId: me
+      responses:
+        '200':
+          description: 当前用户
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users:
+    get:
+      tags: [users]
+      summary: 用户列表（仅 admin）
+      operationId: listUsers
+      parameters:
+        - name: role
+          in: query
+          schema: { type: string, enum: [student, teacher, admin] }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 分页用户列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [users]
+      summary: 创建账号（仅 admin）
+      description: 认证优先（v1.0.3 / CHG-033）：无有效会话 → **401 `AUTH_REQUIRED`**，优先于 CSRF 校验与参数校验；有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`；之后才是角色（admin）与参数（422）校验。
+      operationId: createUser
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserCreate' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /users/{user_id}:
+    patch:
+      tags: [users]
+      summary: 修改角色/停用/重置密码（仅 admin）
+      description: 认证优先（v1.0.3 / CHG-033）：无有效会话 → **401 `AUTH_REQUIRED`**，优先于 CSRF 校验与参数校验；有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`；之后才是角色（admin）与参数（422）校验。用户不存在 → 404。
+      operationId: updateUser
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserPatch' }
+      responses:
+        '200':
+          description: 更新后的用户
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /questions:
+    get:
+      tags: [questions]
+      summary: 题库列表（教师自己的；admin 全部）
+      description: 可见性（v1.0.3 / CHG-036）：列表只返回当前主体**可见**集合（teacher 仅自己的题目，admin 全部）；学生调用 → **403 `FORBIDDEN`**（第 3 步角色判定，不因“无数据”返回空列表或 404）。分页参数非法 → 422（仅在已认证且角色允许后校验，CHG-033）。
+      operationId: listQuestions
+      parameters:
+        - name: keyword
+          in: query
+          schema: { type: string, maxLength: 100 }
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/QuestionType' }
+        - name: tag
+          in: query
+          schema: { type: string, maxLength: 32 }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 分页题目列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuestionPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [questions]
+      summary: 新建题目
+      description: 认证优先（v1.0.3 / CHG-033）：无有效会话 → **401 `AUTH_REQUIRED`**，优先于 CSRF 校验与参数校验；有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`；之后才是角色（teacher/admin）与字段校验（422）。
+      operationId: createQuestion
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuestionCreate' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Question' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /questions/import:
+    post:
+      tags: [questions]
+      summary: 批量导入（Excel/CSV，部分成功返回 200）
+      description: 认证优先（v1.0.3 / CHG-033）：无有效会话 → **401 `AUTH_REQUIRED`**，优先于 CSRF 校验与参数校验（未认证时连 multipart 缺失也返回 401，不是 400/403）；有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`。
+      operationId: importQuestions
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: 导入结果（可能部分失败）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /questions/{question_id}:
+    get:
+      tags: [questions]
+      summary: 题目详情
+      description: |
+        归属与可见性（v1.0.3 / CHG-036）：教师（同角色）读**他人**题目 → **403 `FORBIDDEN`**
+        （**含 draft 状态**：教师管理视图视为可见，属“可见但非本人”，不得改成 404）；学生 → 403（角色）；
+        题目不存在 / 已软删除 → **404 `NOT_FOUND`**。
+        认证优先（v1.0.3 / CHG-033）：无有效会话 → 401 `AUTH_REQUIRED`（GET 不校验 CSRF）。
+      operationId: getQuestion
+      parameters:
+        - $ref: '#/components/parameters/QuestionId'
+      responses:
+        '200':
+          description: 题目
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Question' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [questions]
+      summary: 修改题目
+      description: |
+        认证优先（v1.0.3 / CHG-033）：无有效会话 → **401 `AUTH_REQUIRED`**（优先于 CSRF 校验与参数校验）；
+        有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`。
+        归属与可见性（v1.0.3 / CHG-036）：教师（同角色）改**他人**题目 → **403 `FORBIDDEN`**（含 draft 状态，
+        教师管理视图视为可见）；学生 → 403（角色）；题目不存在 / 已软删除 → **404 `NOT_FOUND`**。
+      operationId: updateQuestion
+      parameters:
+        - $ref: '#/components/parameters/QuestionId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuestionCreate' }
+      responses:
+        '200':
+          description: 更新后的题目
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Question' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      tags: [questions]
+      summary: 删除题目（软删除；被引用时 409）
+      description: |
+        认证优先（v1.0.3 / CHG-033）：无有效会话 → **401 `AUTH_REQUIRED`**（优先于 CSRF 与参数校验）；
+        有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`。
+        归属与可见性（v1.0.3 / CHG-036）：教师（同角色）删**他人**题目 → **403 `FORBIDDEN`**（含 draft 状态）；
+        学生 → 403（角色）；题目不存在 / 已软删除 → **404 `NOT_FOUND`**；题目被试卷引用 → 409 `QUESTION_IN_USE`。
+      operationId: deleteQuestion
+      parameters:
+        - $ref: '#/components/parameters/QuestionId'
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: 已删除 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /papers:
+    get:
+      tags: [papers]
+      summary: 试卷列表
+      description: 可见性（v1.0.3 / CHG-036）：只返回当前主体**可见**集合（teacher 仅自己的试卷，admin 全部）；学生调用 → **403 `FORBIDDEN`**（第 3 步角色判定）。
+      operationId: listPapers
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 分页试卷列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaperPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [papers]
+      summary: 创建试卷（组卷）
+      description: 认证优先（v1.0.3 / CHG-033）：无有效会话 → **401 `AUTH_REQUIRED`**，优先于 CSRF 校验与参数校验；有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`；之后才是角色（teacher/admin）与组卷校验（422/409）。
+      operationId: createPaper
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaperCreate' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paper' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /papers/{paper_id}:
+    get:
+      tags: [papers]
+      summary: 试卷详情
+      description: |
+        归属与可见性（v1.0.3 / CHG-036）：教师（同角色）读**他人**试卷 → **403 `FORBIDDEN`**
+        （含 draft 状态：教师管理视图视为可见，不得改成 404）；学生 → 403（角色）；试卷不存在 → 404 `NOT_FOUND`。
+        认证优先（v1.0.3 / CHG-033）：无有效会话 → 401 `AUTH_REQUIRED`（GET 不校验 CSRF）。
+      operationId: getPaper
+      parameters:
+        - $ref: '#/components/parameters/PaperId'
+      responses:
+        '200':
+          description: 试卷
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paper' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [papers]
+      summary: 修改试卷（已冻结返回 409）
+      description: |
+        认证优先（v1.0.3 / CHG-033）：无有效会话 → **401 `AUTH_REQUIRED`**（优先于 CSRF 与参数校验）；
+        有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`。
+        归属与可见性（v1.0.3 / CHG-036）：教师（同角色）改**他人**试卷 → **403 `FORBIDDEN`**（含 draft 状态）；
+        学生 → 403（角色）；试卷不存在 → 404 `NOT_FOUND`；试卷已冻结 → 409 `PAPER_FROZEN`。
+      operationId: updatePaper
+      parameters:
+        - $ref: '#/components/parameters/PaperId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaperCreate' }
+      responses:
+        '200':
+          description: 更新后的试卷
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paper' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      tags: [papers]
+      summary: 删除试卷（被考试引用时 409）
+      description: |
+        认证优先（v1.0.3 / CHG-033）：无有效会话 → **401 `AUTH_REQUIRED`**（优先于 CSRF 与参数校验）；
+        有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`。
+        归属与可见性（v1.0.3 / CHG-036）：教师（同角色）删**他人**试卷 → **403 `FORBIDDEN`**（含 draft 状态）；
+        学生 → 403（角色）；试卷不存在 → 404 `NOT_FOUND`；被考试引用 → 409 `CONFLICT`。
+      operationId: deletePaper
+      parameters:
+        - $ref: '#/components/parameters/PaperId'
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: 已删除 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /exams:
+    get:
+      tags: [exams]
+      summary: 考试列表
+      description: 可见性（v1.0.3 / CHG-036）：teacher 仅自己的考试（含 draft）、admin 全部；学生调用 → **403 `FORBIDDEN`**（第 3 步角色判定，学生入口是 `GET /me/exams`）。`status=draft` 过滤仅对教师自己的考试有意义。
+      operationId: listExams
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [draft, published, closed] }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 分页考试列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExamPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [exams]
+      summary: 创建并（可选）发布考试
+      description: 认证优先（v1.0.3 / CHG-033）：无有效会话 → **401 `AUTH_REQUIRED`**，优先于 CSRF 校验与参数校验；有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`；之后才是角色（teacher/admin）、时间窗校验与发布副作用。
+      operationId: createExam
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExamCreate' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Exam' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /exams/{exam_id}:
+    get:
+      tags: [exams]
+      summary: 考试详情
+      description: |
+        归属与可见性（v1.0.3 / CHG-036）：教师（同角色）读**他人**考试 → **403 `FORBIDDEN`**
+        （含 `draft`：教师管理视图视为可见，不得改成 404）；学生 → 403（角色，入口为 `GET /me/exams`）；
+        考试不存在 → **404 `NOT_FOUND`**。
+        认证优先（v1.0.3 / CHG-033）：无有效会话 → 401 `AUTH_REQUIRED`（GET 不校验 CSRF）。
+      operationId: getExam
+      parameters:
+        - $ref: '#/components/parameters/ExamId'
+      responses:
+        '200':
+          description: 考试
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Exam' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [exams]
+      summary: 修改考试配置/状态
+      description: |
+        状态机（docs/11 §3 与 C-18）：`draft → published → closed`，只允许前进，不允许回退或跳跃。
+        - `draft → published`：触发试卷冻结与快照（`paper.frozen_at`、`exam.snapshot_version` 递增）；
+        - `published → closed`：手动结束；进行中的会话在下一次读写时按 `EXAM_EXPIRED` 自动交卷判分；
+        - 其他迁移（`closed → published`、`draft → closed`、重复设置同一状态且需副作用）→ 409 `CONFLICT`；
+        - 已发布考试修改 `start_at/end_at/duration_min`：仅当 `now < start_at` 允许，否则 409 `CONFLICT`。
+        - **认证优先（v1.0.3 / CHG-033）**：无有效会话 → **401 `AUTH_REQUIRED`**（优先于 CSRF 校验与参数校验）；
+          有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`。
+        - 归属与可见性（v1.0.3 / CHG-036）：仅创建者（`Exam.created_by`）或 admin；**教师（同角色）改他人考试
+          → 403 `FORBIDDEN`（含 `draft` 状态，教师管理视图视为可见，不得改成 404）**；学生 → 403（角色）；
+          考试不存在 → 404 `NOT_FOUND`。
+      operationId: updateExam
+      parameters:
+        - $ref: '#/components/parameters/ExamId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExamPatch' }
+      responses:
+        '200':
+          description: 更新后的考试
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Exam' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /exams/{exam_id}/results:
+    get:
+      tags: [exams]
+      summary: 考试汇总（教师自己的考试）
+      description: |
+        仅考试创建者或 admin。`total_sessions` = 会话总数；`submitted` = `status ∈ {submitted, expired}`
+        的会话数（到期自动交卷计入已交卷，C-20）；`average_score` 只对已判分会话求均值（两位小数），
+        **无已判分会话时返回 0**（除零口径，v1.0.2 / CHG-031）。
+        **归属与可见性（v1.0.3 / CHG-036）**：角色允许集合为 `{teacher, admin}`；教师（同角色）读**他人**考试
+        → **403 `FORBIDDEN`**（含 `draft` 考试：教师管理视图视为可见，不得改成 404）；学生 → 403（角色判定，
+        第 3 步）；考试不存在 → **404 `NOT_FOUND`**。教师读单会话逐题结果仍是 403（CHG-030，见
+        `GET /sessions/{id}/result`），考试汇总不算该接口的替代出口，两者边界见 ADR-011。
+      operationId: getExamResults
+      parameters:
+        - $ref: '#/components/parameters/ExamId'
+      responses:
+        '200':
+          description: 汇总结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExamResultSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /exams/{exam_id}/sessions:
+    post:
+      tags: [sessions]
+      summary: 开始或恢复本场考试（学生，幂等）
+      description: |
+        返回码语义写死（C-22），客户端与测试按此断言：
+
+        | 场景 | 状态码 | 说明 |
+        |---|---|---|
+        | 首次进入（`published`、`start_at ≤ now ≤ end_at`、无既有会话） | **201** | 新建会话，`status=in_progress` |
+        | 已有会话（作答中 / 已交卷 / 已到期，含重复调用） | **200** | 恢复会话；`status`/`score`/`answers` 为当前真实值 |
+        | `now < start_at` | **409** | `code=EXAM_NOT_STARTED` |
+        | `now > end_at` 或 `exam.status=closed`（无既有会话） | **409** | `code=EXAM_EXPIRED` |
+        | 考试不存在 / `status=draft` / 对该生不可见 | **404** | `code=NOT_FOUND`（防枚举，不区分“不存在”与“未发布”） |
+
+        - 幂等：`(exam_id, student_id)` 唯一；并发双请求只有一个 201，另一个 200。
+        - `deadline_at` 只在新建时计算 = `min(now + duration_min, end_at)`；恢复时**不重算**（C-01/C-22）。
+        - 响应必须含已保存答案 `answers`（恢复回读，C-01）与 `submitted_at`（已交卷非空）。
+        - 已交卷/已到期再调用：200 + 现状（前端直接跳成绩页），不返回 409（C-15 幂等口径）。
+        - 仅 `student`；教师/admin → 403 `FORBIDDEN`。
+        - **认证优先（v1.0.3 / CHG-033）**：无有效会话 → **401 `AUTH_REQUIRED`**，优先于 CSRF 校验与
+          参数校验（未认证时即使缺 `X-CSRF-Token`、或 `exam_id` 非法，也返回 401，不是 403/422）。
+          有会话但缺/错 CSRF → 403 `CSRF_INVALID`，之后才是角色（403）与考试可见性（404）。
+        - **可见性（v1.0.3 / CHG-036）**：`draft` / 未发布考试对**学生不可见** → **404 `NOT_FOUND`**
+          （不区分“不存在”与“未发布”）；这是“学生视角不可见 → 404”的唯一典型入口，
+          与教师侧“同角色他人考试（含 draft）→ 403”并不冲突（可见域按角色定义，见 docs/12 §2）。
+      operationId: startOrResumeSession
+      parameters:
+        - $ref: '#/components/parameters/ExamId'
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: 恢复已有会话（含已交卷/已到期，返回现状与成绩）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionState' }
+        '201':
+          description: 新建会话（首次进入，status=in_progress）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /sessions/{session_id}:
+    get:
+      tags: [sessions]
+      summary: 会话状态与题目（学生自己的会话）
+      description: |
+        恢复/刷新唯一入口（C-01、C-13）。返回题目（不含正确答案）、服务端时间、已保存答案、判分摘要。
+        **到期自动交卷（C-13 / ADR-009）**：若 `now ≥ deadline_at` 且会话仍为 `in_progress`，服务端在本次
+        读取时同步触发自动交卷与判分（与 `POST /sessions/{id}/submit` 共用同一事务路径，幂等），
+        随后返回 `status=expired`、`score` 已填充、`submitted_at` 非空，`answers` 保留最后保存值。
+        **本接口对已到期会话返回 200，不返回 409**——过期是正常终态，客户端据此直接跳成绩页
+        （`GET /sessions/{id}/result`），无需解析错误体（错误体不新增字段）。
+        `status` 口径（C-20）：`in_progress` 可作答；`submitted` 已交卷；`expired` 到期自动交卷，
+        语义等价 submitted（成绩与逐题结果同样可读）。
+        归属：仅会话所属学生；他人会话 → 403 `FORBIDDEN`（AC-18）；不存在 → 404 `NOT_FOUND`（C-17）。
+      operationId: getSession
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: 会话状态（含已保存答案、成绩与提交时间；到期时自动交卷后返回 expired）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /sessions/{session_id}/answers:
+    put:
+      tags: [sessions]
+      summary: 自动保存答案（幂等，client_seq 单调）
+      description: |
+        防乱序（ADR-006 / AC-15）：仅当 `client_seq > last_client_seq` 才落库并推进 `last_client_seq`；
+        旧 seq 仍返回 **200**（不覆盖），响应 `applied=false` 且 `saved_seq` 为当前服务端值（C-16）。
+        已交卷或已到期（`status ∈ {submitted, expired}`）→ 409 `EXAM_EXPIRED`：服务端已自动交卷并判分，
+        客户端应 `GET /sessions/{id}` 取 `score` 后跳成绩页（C-13，不新增错误体字段）。
+        `answers` 为增量（只需携带本次变更的题目，至少 1 条）；同一 `question_id` 以 `client_seq` 最大者为准。
+        归属：仅会话所属学生；他人会话 → 403；不存在 → 404（C-17）。
+        **认证优先（v1.0.3 / CHG-033）**：无有效会话 → **401 `AUTH_REQUIRED`**，优先于 CSRF 校验与
+        请求体校验（未认证时即使 `client_seq` 非法或 `answers` 为空，也返回 401，不是 422/403）。
+        归属判定（v1.0.3 / CHG-036）：学生 B 写学生 A 的会话 → **403**（会话族属“可见但非本人”，AC-18）。
+      operationId: saveAnswers
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnswerSaveRequest' }
+      responses:
+        '200':
+          description: 保存结果（`applied` 必填：true=已落库；false=旧 seq 被忽略，返回当前 saved_seq）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnswerSaveResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /sessions/{session_id}/submit:
+    post:
+      tags: [sessions]
+      summary: 交卷并判分（幂等，重复提交 200）
+      description: |
+        幂等统一（C-15 / ADR-005 / ADR-009）：**本接口只有 200，不存在 409**。
+        - 首次：`in_progress → submitted` 原子迁移（行锁或等价串行化），同事务判分并写
+          `answers.is_correct/earned_points`、`exam_sessions.score/submitted_at`，返回 `replayed=false`；
+        - 重复提交（`status` 已是 `submitted` 或 `expired`）：**200** + 既有成绩，`replayed=true`，
+          `score`/`submitted_at` 与首次一致，**不重复计分、不新增成绩行**（AC-13）；
+        - 已到期自动交卷后再提交：200 + `status=expired` + 既有成绩，`replayed=true`；
+        - 会话不存在 → 404；非本人 → 403（C-17），均不走 409。
+        - **认证优先（v1.0.3 / CHG-033）**：无有效会话 → **401 `AUTH_REQUIRED`**，优先于 CSRF 校验
+          （本接口无请求体参数，故参数校验不涉及）；有会话但缺/错 `X-CSRF-Token` → 403 `CSRF_INVALID`。
+        并发双提交：唯一约束 `(exam_id, student_id)` + 状态迁移保证只产生一条成绩、无 5xx（AC-13）。
+      operationId: submitSession
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: 交卷成功；或重复提交/已自动交卷，返回既有成绩（replayed=true，成绩不变）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubmitResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /sessions/{session_id}/result:
+    get:
+      tags: [sessions]
+      summary: 逐题结果（仅学生本人；教师走考试汇总）
+      description: |
+        可读条件：`status ∈ {submitted, expired}`（到期自动交卷已判分，C-13）；未交卷 `in_progress`
+        → 409 `NOT_SUBMITTED`（AC-19）。
+        **权限（v1.0.2 / CHG-030，与实现和 docs/12 权限矩阵对齐）**：
+        - `student`：仅自己的会话可读（会话所属学生本人）；
+        - `teacher`：**一律 403** `FORBIDDEN`——即使该会话属于自己创建的考试也不可读单会话逐题结果；
+          教师口径是**考试汇总** `GET /exams/{id}/results`（教师只读自己考试的汇总与名单）；
+        - `admin`：可读全部（运维/审计需要）。
+        防枚举（C-17）：角色允许但资源非本人 → **403** `FORBIDDEN`（AC-18 硬性要求，TC-SEC-18 断言 403）；
+        资源不存在 → **404** `NOT_FOUND`。两者都是统一 `Error` 体，**不含** `items/score/selected/correct_answer`
+        任何字段；不得借 403/404 差异推断他人会话是否存在。
+        教师被拒时不得改为返回 404（角色判定先于归属，docs/12 §2 第 3 步）。
+      operationId: getSessionResult
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: 成绩明细（含逐题对错、得分与解析）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResultDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /me/exams:
+    get:
+      tags: [me]
+      summary: 我的考试列表（学生可考/已考，含会话状态与成绩）
+      description: |
+        学生发现入口（C-02）：解决“学生拿不到 exam_id、无法调用 `POST /exams/{id}/sessions`”的断链。
+        只读视图，范围写死：
+        - `status=published` 的全部考试（含未开始/进行中/已结束），配 `start_at/end_at/duration_min`，
+          前端结合 `server_time` 判断“可进入 / 未开始 / 已截止”；
+        - 该生**已有会话**的 `closed` 考试（已考记录，保证“我的成绩”与“我的考试”一致）；
+        - **不含 `draft`**：对当前主体不可见的考试不出现（等价 404 防枚举，C-17）。
+        `session_status` 口径（C-02，与 `SessionState.status` 同一枚举 + `not_started`）：
+        `not_started`=无会话；`in_progress`=作答中；`submitted`=已交卷；`expired`=到期自动交卷。
+        `session_id`/`score`/`submitted_at` 仅在已有会话（含 `submitted|expired`）时给值，否则为 `null`。
+        **校时与到期结算（v1.0.2 / CHG-024）**：响应根级**必须**返回 `server_time`，前端以它（而非
+        浏览器本地时钟）校时并决定“未开始 / 可进入 / 已截止”。
+        当 `session_status=in_progress` 但已过该会话的 `deadline_at` 时，服务端在**本次读取时**
+        按到期规则结算（自动交卷 + 判分，幂等，与 `GET /sessions/{id}` 同一事务路径），
+        响应中该条目的 `session_status` 返回 **`expired`**、`score`/`submitted_at` 一并给值。
+        即：本接口不会返回“已超期但仍是 in_progress”的条目，语义与 `GET /sessions/{id}` 的
+        200 + `expired` 完全一致（C-13 到期可观测在本接口同样成立）。
+        排序：`start_at` 倒序（最近在前）；分页同全局约定。
+        权限：仅 `student`；教师/admin 走 `GET /exams`，调用本接口 → 403 `FORBIDDEN`。
+      operationId: listMyExams
+      parameters:
+        - name: session_status
+          in: query
+          description: 按该生会话状态过滤（C-02）
+          schema: { type: string, enum: [not_started, in_progress, submitted, expired] }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 分页考试列表（含会话状态与成绩）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyExamPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /me/results:
+    get:
+      tags: [me]
+      summary: 我的成绩列表
+      operationId: listMyResults
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 分页成绩
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyResultPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /me/wrong-questions:
+    get:
+      tags: [me]
+      summary: 我的错题本
+      operationId: listMyWrongQuestions
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 分页错题
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WrongQuestionPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /audit-logs:
+    get:
+      tags: [audit]
+      summary: 审计日志（仅 admin）
+      description: |
+        默认范围（C-05）：未传 `from`/`to` 时返回**最近 180 天**记录（docs/11：留存 180 天，过期由定时任务删除）；
+        `from`/`to` 为闭区间，按 `created_at` 倒序返回。记录只增不改不删（无对应写接口）。
+        教师/学生调用 → 403 `FORBIDDEN`（AC-21）。
+        **系统记录（v1.0.3 / CHG-035 / P-011）**：系统操作与 CLI 记录的 `actor_id` 为 **null**、
+        `ip` 为 **`"-"`**（无登录主体与来源地址）；用户触发的写操作为真实 user id + 真实 IP。
+        查询参数 `actor_id` 只按指定用户过滤，系统记录（null）不匹配任何整数过滤值。
+        认证优先（v1.0.3 / CHG-033）：无有效会话 → 401 `AUTH_REQUIRED`（GET 不校验 CSRF）。
+      operationId: listAuditLogs
+      parameters:
+        - name: action
+          in: query
+          schema: { type: string, maxLength: 64 }
+        - name: actor_id
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 分页审计日志
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditLogPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: session_id
+      description: |
+        服务端会话 Cookie（HttpOnly、8h、`SameSite=Lax`）。**认证优先（v1.0.3 / CHG-033 / P-009）**：
+        本 scheme 覆盖的接口在**无有效会话**（未登录 / 已吊销 / 8h 过期 / 账号停用 / 伪造 Cookie）时
+        **一律返回 401 `AUTH_REQUIRED`**，且该 401 **优先于 CSRF 校验与参数校验**——
+        未认证请求即使同时缺少 `X-CSRF-Token`、或请求体/查询参数非法，也返回 401，不返回 403 `CSRF_INVALID`
+        或 422 `VALIDATION_ERROR`。理由：未认证请求不应进入授权/校验分支，且不能借 403/422 差异探测
+        CSRF 机制或参数规则（与 `server` 中间件「先会话、后 CSRF、后业务校验」的实际顺序一致）。
+        公开接口严格等于 `{GET /healthz, POST /auth/login}`（`security: []`）。
+
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: { type: string }
+      description: 与会话绑定的 CSRF token，来自 GET /auth/me
+    QuestionId:
+      name: question_id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    PaperId:
+      name: paper_id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    ExamId:
+      name: exam_id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+
+  responses:
+    BadRequest:
+      description: 请求格式错误（JSON 解析失败、Content-Type 不符、缺少 multipart 字段等），code=VALIDATION_ERROR
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: 未登录或会话失效（8h 过期、已登出、账号停用），code=AUTH_REQUIRED；不返回任何用户数据。**该 401 优先于 CSRF 校验与参数校验**（v1.0.3 / CHG-033）：同一请求即使缺 `X-CSRF-Token` 或参数非法，也返回 401
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InvalidCredentials:
+      description: |
+        登录失败（AC-02 / C-07）。**固定** `code=AUTH_INVALID_CREDENTIALS`，`message` 固定为
+        “用户名或密码错误”，不区分账号不存在/密码错误/账号停用；响应体与 400 同为 Error 三字段，
+        且实现须保证失败耗时恒定（不在响应中暴露锁定/重试信息）。
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    CsrfForbidden:
+      description: CSRF 校验失败（缺失或与会话不匹配的 `X-CSRF-Token`），code=CSRF_INVALID（C-09 / docs/12 §3）。**仅在已认证会话上校验**（v1.0.3 / CHG-033）：无有效会话时先返回 401 `AUTH_REQUIRED`，不会是 403
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: |
+        无权限（角色或资源归属不符），只返回统一 Error。防枚举与可见性策略（C-17 / v1.0.3 CHG-036，docs/12 §2）：
+        ① 角色整体无权调用该接口（如学生调 /users、学生调 /papers）→ 403 `FORBIDDEN`，不区分资源是否存在；
+        ② 角色允许、资源**可见**但归属不符（他人会话/成绩/题目/试卷/考试）→ 403 `FORBIDDEN`
+           （AC-18 明确要求 IDOR 返回 403，TC-SEC-18 按 403 断言）；
+        ③ 资源对当前主体**不可见**（**学生视角**的 draft/未发布考试、软删除题目、学生视角的他人私有资源）
+           → 见 `NotFound`（404）。
+        **可见域按角色定义（v1.0.3 / CHG-036 定稿，消除 draft 403/404 张力）**：
+        - 教师（同角色）对**他人**的题目/试卷/考试，**无论 draft / frozen / published**，一律 **403**
+          （教师管理视图视为“可见”，属②“可见但非本人”，不得改成 404）；
+        - 学生对 **draft/未发布考试**（如 `POST /exams/{id}/sessions`）→ **404**（学生可见域不含 draft，属③）；
+        - 学生 B 读学生 A 的会话/成绩 → **403**（会话/成绩族属②，AC-18 硬性）。
+        403 响应不得携带任何业务数据（无 items/score/selected/correct_answer）。
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: |
+        资源不存在（C-17）。**不区分**“确实不存在”与“存在但对当前主体不可见”，统一 404 + `code=NOT_FOUND`，
+        响应体仅 Error 三字段，防止通过 403/404 差异枚举资源。
+        本响应覆盖：任意不存在的 id、已软删除题目、**学生视角**的 draft/未发布考试、学生视角的他人私有资源。
+        **不覆盖**教师视角的同角色他人 draft 资源——那是 403（见 `Forbidden` ②，v1.0.3 / CHG-036）。
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: |
+        状态冲突（409）。`code` 取值：`EXAM_NOT_STARTED`（考试未开始）/ `EXAM_EXPIRED`（考试已截止、
+        会话已到期或已自动交卷）/ `QUESTION_IN_USE`（题目被试卷引用，拒绝删除）/
+        `PAPER_FROZEN`（试卷已冻结，拒绝修改）/ `NOT_SUBMITTED`（未交卷请求逐题结果）/
+        `CONFLICT`（其他状态机冲突，如非法考试状态迁移）。
+        **交卷接口不再使用 409**：重复提交返回 200 + 既有成绩（C-15）。
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: 字段校验失败（Pydantic/JSON Schema，含所有 PATCH 类接口），code=VALIDATION_ERROR
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      description: |
+        统一错误体。`code` 为稳定枚举（C-03），前端**按 code 分支**，禁止解析 message；
+        枚举与 docs/10-arch.md「错误码约定」一致。**v1.0.2 起 `ALREADY_SUBMITTED` 已从枚举移除**
+        （CHG-032）：交卷重复提交自 v1.0.1 起就是幂等 200（C-15），该码不再有合法出口；
+        实现若残留该常量，映射为 `CONFLICT` 或删除，不得再返回。
+        **枚举共 16 值**，其中 `NOT_SUBMITTED`（未交卷请求逐题结果 → 409）与 `IMPORT_PARTIAL`
+        （导入部分失败，HTTP 仍 200）均**保留在用**（v1.0.3 复核：`server/app/errors.py` 已定义两者）。
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+          description: 稳定错误码（见 docs/10-arch.md 错误码表）
+          enum:
+            - VALIDATION_ERROR
+            - AUTH_REQUIRED
+            - AUTH_INVALID_CREDENTIALS
+            - CSRF_INVALID
+            - FORBIDDEN
+            - NOT_FOUND
+            - CONFLICT
+            - METHOD_NOT_ALLOWED
+            - INTERNAL_ERROR
+            - HTTP_ERROR
+            - EXAM_NOT_STARTED
+            - EXAM_EXPIRED
+            - QUESTION_IN_USE
+            - PAPER_FROZEN
+            - NOT_SUBMITTED
+            - IMPORT_PARTIAL
+        message: { type: string }
+        request_id: { type: string, format: uuid }
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 64 }
+        password: { type: string, minLength: 1, maxLength: 128 }
+
+    LoginResponse:
+      type: object
+      description: 登录成功响应；**严禁**出现 password_hash 等敏感字段（C-21）
+      additionalProperties: false
+      required: [user, csrf_token]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        csrf_token: { type: string }
+
+    MeResponse:
+      type: object
+      description: 当前用户；**严禁**出现 password_hash 等敏感字段（C-21）
+      additionalProperties: false
+      required: [user, csrf_token]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        csrf_token: { type: string }
+
+    User:
+      type: object
+      description: 账号公开视图（C-21）；**严禁**包含 password_hash/token 等敏感列
+      additionalProperties: false
+      required: [id, username, display_name, role, is_active, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        username: { type: string }
+        display_name: { type: string }
+        role: { type: string, enum: [student, teacher, admin] }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    UserCreate:
+      type: object
+      required: [username, display_name, role, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 64 }
+        display_name: { type: string, minLength: 1, maxLength: 64 }
+        role: { type: string, enum: [student, teacher, admin] }
+        password: { type: string, minLength: 8, maxLength: 128 }
+
+    UserPatch:
+      type: object
+      properties:
+        display_name: { type: string, maxLength: 64 }
+        role: { type: string, enum: [student, teacher, admin] }
+        is_active: { type: boolean }
+        password: { type: string, minLength: 8, maxLength: 128 }
+
+    UserPage:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/User' }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+
+    QuestionType:
+      type: string
+      enum: [single, multiple, judge]
+
+    Option:
+      type: object
+      required: [key, text]
+      properties:
+        key: { type: string, pattern: '^[A-Z]$' }
+        text: { type: string }
+
+    Question:
+      type: object
+      required: [id, owner_id, type, stem, options, answer, explanation, difficulty, tags, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        owner_id: { type: integer, format: int64 }
+        type: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string }
+        options:
+          type: array
+          items: { $ref: '#/components/schemas/Option' }
+        answer:
+          type: array
+          items: { type: string }
+        explanation:
+          type: string
+          description: 解析（AC-05 必填，C-10）；库里历史/导入缺解析的行须补齐后才允许出现在列表/详情
+        difficulty: { type: integer, minimum: 1, maximum: 5 }
+        tags:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    QuestionCreate:
+      type: object
+      description: 新建/修改题目（AC-05）。`explanation` 为必填（C-10）：不允许“无解析”的题；导入缺失解析的行按失败行计入 ImportResult.failed。
+      required: [type, stem, options, answer, explanation, difficulty, tags]
+      properties:
+        type: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string, minLength: 1 }
+        options:
+          type: array
+          minItems: 2
+          items: { $ref: '#/components/schemas/Option' }
+        answer:
+          type: array
+          minItems: 1
+          items: { type: string }
+        explanation: { type: string, minLength: 1 }
+        difficulty: { type: integer, minimum: 1, maximum: 5 }
+        tags:
+          type: array
+          items: { type: string }
+
+    QuestionPage:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Question' }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+
+    ImportFailure:
+      type: object
+      description: 单行失败明细（行号 + 原因），与“重复跳过”互斥（C-11）
+      required: [row, reason]
+      properties:
+        row: { type: integer, minimum: 1 }
+        reason: { type: string }
+
+    ImportResult:
+      type: object
+      description: |
+        批量导入结果（AC-06 / AC-08）。HTTP 恒为 200（部分成功）。
+        口径（C-11）：`total` = 文件数据行数（不含表头）= `imported + skipped_duplicates + len(failed)`；
+        `skipped_duplicates` = 命中幂等去重键 `(owner_id, type, md5(stem))` 被跳过的行数
+        （同一文件二次导入时 > 0，且 `imported` 为 0）；`failed[]` 只含格式/校验错误行。
+      required: [imported, skipped_duplicates, failed, total]
+      properties:
+        imported: { type: integer, minimum: 0 }
+        skipped_duplicates:
+          type: integer
+          minimum: 0
+          description: 因重复（题干+类型幂等键已存在）跳过的行数；0 表示无重复（C-11 / AC-08）
+        failed:
+          type: array
+          items: { $ref: '#/components/schemas/ImportFailure' }
+        total: { type: integer, minimum: 0 }
+
+    PaperQuestion:
+      type: object
+      required: [question_id, order_no, points]
+      properties:
+        question_id: { type: integer, format: int64 }
+        order_no: { type: integer, minimum: 1 }
+        points:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 100
+          multipleOf: 0.01
+          description: |
+            该题分值：必须 `0 < points ≤ 100`，且为 0.01 的整数倍（C-08 / C-14）。
+            上限与总分自洽（v1.0.2 / CHG-025）：单题上限 **100** × 组卷上限 100 题 = **10000**
+            = `Paper.total_points.maximum`，因此“100 题 × 100 分”的极端组合不越界。
+        partial_rule:
+          type: string
+          enum: [all_or_nothing, partial]
+          default: all_or_nothing
+          description: 多选给分规则（仅 type=multiple 生效，C-14）：all_or_nothing=全对满分否则 0；
+            partial=无错选时 round(选中正确数/正确总数 × points, 2)，有错选 0（ADR-007）
+
+    Paper:
+      type: object
+      required: [id, owner_id, title, total_points, status, questions, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        owner_id: { type: integer, format: int64 }
+        title: { type: string }
+        total_points:
+          type: number
+          minimum: 0
+          maximum: 10000
+          multipleOf: 0.01
+          description: |
+            只读计算值 = Σ questions[].points（两位小数），**由服务端计算并返回**，请求模型中没有该字段（C-08）。
+            业务合法区间 `1 ≤ total_points ≤ 10000`（`minItems: 1` 且每题 `points > 0`，实际不会为 0；
+            schema 的 `minimum: 0` 是宽松下界，仅为向后兼容保留）。上限 = 100 题 × 单题 100 分（v1.0.2 / CHG-025/026）。
+        status:
+          type: string
+          enum: [draft, frozen]
+          description: frozen 后不可再改（PUT → 409 PAPER_FROZEN，AC-10）
+        frozen_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            快照冻结时间（C-12 / ADR-007）。**条件不变量（v1.0.2 / CHG-027）**：`status=frozen` 时
+            本字段**必返回**（非 null）；`status=draft` 时为空（null 或省略）。
+            字段本身保持 optional —— 不引入 `if/then` 关键字，QA 按 `status` 条件断言（见 docs/13 §7）。
+        questions:
+          type: array
+          items: { $ref: '#/components/schemas/PaperQuestion' }
+        created_at: { type: string, format: date-time }
+
+    PaperCreate:
+      type: object
+      description: |
+        组卷请求（AC-09）。请求体**只含** `title` 与 `questions`（每题 `order_no`、`points`，可选
+        `partial_rule`）；`total_points` **由服务端计算并返回**，是响应字段（只读），不属于请求模型。
+        服务端校验（v1.0.2 / CHG-026 统一口径，无“声明总分”概念）：
+        - 每题：`0 < points ≤ 100` 且为 0.01 的整数倍；
+        - 合计：`1 ≤ Σ questions[].points ≤ 10000`（两位小数），并据此写入 `Paper.total_points`；
+        - 越界/非法 → 422 `VALIDATION_ERROR`（不是 409）。
+        上下限自洽（CHG-025）：`maxItems: 100` × 单题 `maximum: 100` = **10000** =
+        `Paper.total_points.maximum`，极端组合恰好不越界。
+        验收数据示例：10 题 × 10 分 = **100** 分，由服务端算出 `total_points=100` 随 201 返回。
+      required: [title, questions]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 128 }
+        questions:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/PaperQuestion' }
+
+    PaperPage:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Paper' }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+
+    Exam:
+      type: object
+      required: [id, paper_id, title, start_at, end_at, duration_min, status, created_by, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        paper_id: { type: integer, format: int64 }
+        title: { type: string }
+        start_at: { type: string, format: date-time }
+        end_at: { type: string, format: date-time }
+        duration_min: { type: integer, minimum: 10, maximum: 300 }
+        shuffle_questions: { type: boolean }
+        shuffle_options: { type: boolean }
+        status:
+          type: string
+          enum: [draft, published, closed]
+          description: 状态机 draft→published→closed，只进不退（docs/11 §3，C-18）
+        created_by:
+          type: integer
+          format: int64
+          description: 创建者（教师）用户 id；教师只能操作/查看自己的考试，admin 全部（AC-10 / RBAC，C-04）
+        snapshot_version:
+          type: integer
+          minimum: 1
+          description: |
+            发布时冻结的试卷快照版本；同一考试所有会话按该版本判分（AC-10 / ADR-007，C-12）。
+            **条件不变量（v1.0.2 / CHG-027）**：`status ∈ {published, closed}` 时本字段**必返回**
+            （≥ 1，closed 沿用发布时版本）；`status=draft` 时为空（null 或省略）。
+            字段本身保持 optional —— 不引入 `if/then` 关键字，QA 按 `status` 条件断言（见 docs/13 §7）。
+        updated_at: { type: string, format: date-time, description: 最近一次配置/状态变更时间（C-18） }
+        created_at: { type: string, format: date-time }
+
+    ExamCreate:
+      type: object
+      description: 创建考试（AC-10）。`publish=true` 时同事务触发试卷冻结与快照（`Paper.frozen_at`、`Exam.snapshot_version`）。
+      required: [paper_id, title, start_at, end_at, duration_min]
+      properties:
+        paper_id: { type: integer, format: int64 }
+        title: { type: string, minLength: 1, maxLength: 128 }
+        start_at: { type: string, format: date-time }
+        end_at: { type: string, format: date-time }
+        duration_min: { type: integer, minimum: 10, maximum: 300 }
+        shuffle_questions: { type: boolean }
+        shuffle_options: { type: boolean }
+        publish: { type: boolean, default: false }
+
+    ExamPatch:
+      type: object
+      description: |
+        状态迁移（C-18）：只允许 `draft→published`（触发冻结/快照）与 `published→closed`（手动结束）；
+        回退、跳跃、`closed→*` 一律 409 `CONFLICT`。`start_at < end_at` 且
+        `duration_min` 不超过时间窗；已发布考试修改时间窗仅在 `now < start_at` 时允许。
+      properties:
+        title: { type: string, maxLength: 128 }
+        start_at: { type: string, format: date-time }
+        end_at: { type: string, format: date-time }
+        duration_min: { type: integer, minimum: 10, maximum: 300 }
+        status:
+          type: string
+          enum: [draft, published, closed]
+          description: 仅 draft→published、published→closed 合法（C-18）
+
+    ExamPage:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Exam' }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+
+    SessionQuestion:
+      type: object
+      description: 作答视图的题目（**不含正确答案**，来自试卷快照）
+      required: [question_id, type, stem, options, order_no, points]
+      properties:
+        question_id: { type: integer, format: int64 }
+        type: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string }
+        options:
+          type: array
+          items: { $ref: '#/components/schemas/Option' }
+        order_no: { type: integer }
+        points:
+          type: number
+          multipleOf: 0.01
+          description: 来自试卷快照的分值，两位小数（C-14）
+
+    SessionState:
+      type: object
+      description: |
+        会话状态 + 作答所需全部数据（C-01 恢复回读）。`answers` 为服务端已落库答案，
+        刷新/断网重连/换标签页后由本对象回填，前端**不得**只依赖本地缓存。
+      additionalProperties: false
+      required: [id, exam_id, status, started_at, deadline_at, server_time, last_client_seq, answers, questions]
+      properties:
+        id: { type: integer, format: int64 }
+        exam_id: { type: integer, format: int64 }
+        status:
+          type: string
+          enum: [in_progress, submitted, expired]
+          description: expired = 到期自动交卷且已判分，语义等价 submitted（成绩与逐题结果均可读，C-13/C-20）
+        started_at: { type: string, format: date-time }
+        deadline_at: { type: string, format: date-time }
+        server_time: { type: string, format: date-time, description: 服务端当前时间，供前端校时（ADR-006） }
+        last_client_seq:
+          type: integer
+          description: 服务端已接受的最大 client_seq（ADR-006）
+        submitted_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            交卷时间；未交卷为 null（C-01）。expired 时同样有值（自动交卷时刻）。
+            **条件不变量（v1.0.2 / CHG-028）**：字段保持 optional（`in_progress` 时为 null），
+            但 `status ∈ {submitted, expired}` 时**必有值**（非 null）。
+        score:
+          type: [number, "null"]
+          multipleOf: 0.01
+          description: |
+            成绩；`in_progress` 为 null，`status ∈ {submitted, expired}` 时**必有值**
+            （C-13 到期可观测）。字段保持 optional（v1.0.2 / CHG-028：不引入 `if/then`，按 status 条件断言）。
+        answers:
+          type: array
+          items: { $ref: '#/components/schemas/AnswerItem' }
+          description: 已保存答案（未作答的题不出现在数组中）；恢复会话必读字段（C-01）
+        questions:
+          type: array
+          items: { $ref: '#/components/schemas/SessionQuestion' }
+
+    AnswerItem:
+      type: object
+      required: [question_id, selected]
+      properties:
+        question_id: { type: integer, format: int64 }
+        selected:
+          type: array
+          items: { type: string }
+          description: 选中的选项 key 数组；空数组表示“已清空该题作答”
+
+    AnswerSaveRequest:
+      type: object
+      description: 增量保存（只需携带本次变更的题目）；`client_seq` 单调递增（ADR-006）
+      required: [client_seq, answers]
+      properties:
+        client_seq: { type: integer, minimum: 1 }
+        answers:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/AnswerItem' }
+
+    AnswerSaveResponse:
+      type: object
+      description: |
+        自动保存结果（C-16）。旧 seq 被忽略时 HTTP 仍 200，`applied=false`；
+        已交卷/已到期时不会走到 200，而是 409 `EXAM_EXPIRED`（见接口 description）。
+        **`applied` 为必填**（v1.0.2 / CHG-028）：服务端在每条 200 响应中**总是**显式返回
+        true/false，前端无需按“字段缺失”猜语义。
+      required: [saved_seq, saved_at, applied]
+      properties:
+        saved_seq: { type: integer, description: 服务端当前接受的 client_seq }
+        saved_at: { type: string, format: date-time }
+        applied:
+          type: boolean
+          description: 必填（服务端总是返回）：true=本次请求被接受并落库；false=client_seq 不大于 last_client_seq，已被忽略（C-16）
+
+    SubmitResult:
+      type: object
+      description: |
+        交卷结果（C-15 / ADR-005）：首次提交与重复提交**都是 200**，成绩一致；
+        `replayed=true` 表示本次为重放（会话此前已 submitted/expired），前端据此提示“已交卷，显示原成绩”。
+        **`replayed` 为必填**（v1.0.2 / CHG-028）：服务端在每条 200 响应中**总是**显式返回 true/false，
+        不再依赖“缺省视为 false”。
+      required: [session_id, status, score, submitted_at, replayed]
+      properties:
+        session_id: { type: integer, format: int64 }
+        status:
+          type: string
+          enum: [submitted, expired]
+          description: submitted=主动交卷；expired=到期自动交卷（成绩同样有效，C-13/C-20）
+        score:
+          type: number
+          multipleOf: 0.01
+        submitted_at: { type: string, format: date-time }
+        replayed:
+          type: boolean
+          description: 必填（服务端总是返回）：重复提交/已自动交卷为 true；首次交卷为 false（C-15）
+
+    ResultItem:
+      type: object
+      description: 逐题判分结果（C-21：禁止夹带额外字段/他人数据）
+      additionalProperties: false
+      required: [question_id, type, selected, correct_answer, is_correct, earned_points, points]
+      properties:
+        question_id: { type: integer, format: int64 }
+        type: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string }
+        selected:
+          type: array
+          items: { type: string }
+        correct_answer:
+          type: array
+          items: { type: string }
+        is_correct: { type: boolean }
+        earned_points: { type: number, minimum: 0, multipleOf: 0.01 }
+        points: { type: number, minimum: 0, multipleOf: 0.01 }
+        explanation: { type: string }
+
+    ResultDetail:
+      type: object
+      description: 逐题结果（submitted 与 expired 均可读；未交卷 409 NOT_SUBMITTED，AC-19）
+      required: [session_id, exam_id, score, total_points, submitted_at, items]
+      properties:
+        session_id: { type: integer, format: int64 }
+        exam_id: { type: integer, format: int64 }
+        score: { type: number, multipleOf: 0.01 }
+        total_points: { type: number, multipleOf: 0.01 }
+        submitted_at: { type: string, format: date-time }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ResultItem' }
+
+    MyResultItem:
+      type: object
+      description: 我的成绩条目（C-06：带 session_id 以便跳转逐题结果）
+      required: [session_id, exam_id, exam_title, score, total_points, submitted_at]
+      properties:
+        session_id:
+          type: integer
+          format: int64
+          description: 用于跳转 GET /sessions/{id}/result（C-06）
+        exam_id: { type: integer, format: int64 }
+        exam_title: { type: string }
+        score: { type: number, multipleOf: 0.01 }
+        total_points: { type: number, multipleOf: 0.01 }
+        submitted_at: { type: string, format: date-time }
+
+    MyResultPage:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/MyResultItem' }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+
+    MyExamItem:
+      type: object
+      description: 学生视角的考试条目（C-02），供“可考/已考”列表与进入考试
+      required: [exam_id, exam_title, start_at, end_at, duration_min, session_status]
+      properties:
+        exam_id: { type: integer, format: int64 }
+        exam_title: { type: string }
+        start_at: { type: string, format: date-time }
+        end_at: { type: string, format: date-time }
+        duration_min: { type: integer }
+        session_status:
+          type: string
+          enum: [not_started, in_progress, submitted, expired]
+          description: 该生在本场考试的状态；not_started=无会话（可进入或未开始，C-02）
+        session_id:
+          type: [integer, "null"]
+          format: int64
+          description: 已有会话时返回，可直接 GET /sessions/{id}；否则 null（C-02）
+        score:
+          type: [number, "null"]
+          multipleOf: 0.01
+          description: submitted/expired 时为成绩，否则 null（C-02）
+        total_points:
+          type: [number, "null"]
+          multipleOf: 0.01
+          description: 试卷总分 = Σ 明细分值；未知时为 null
+        submitted_at:
+          type: [string, "null"]
+          format: date-time
+          description: 交卷/自动交卷时间；未交卷为 null
+
+    MyExamPage:
+      type: object
+      description: |
+        我的考试分页（C-02）。根级 `server_time` 为服务端当前时间，前端**必须**以它校时，
+        不得依赖浏览器本地时钟判断“未开始/可进入/已截止”（v1.0.2 / CHG-024）。
+      required: [items, total, page, page_size, server_time]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/MyExamItem' }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+        server_time:
+          type: string
+          format: date-time
+          description: 服务端当前时间（UTC），供前端校时；与 SessionState.server_time 同一口径（ADR-006）
+
+    WrongQuestion:
+      type: object
+      required: [question_id, type, stem, wrong_count, last_wrong_at]
+      properties:
+        question_id: { type: integer, format: int64 }
+        type: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string }
+        wrong_count: { type: integer }
+        last_wrong_at: { type: string, format: date-time }
+
+    WrongQuestionPage:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WrongQuestion' }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+
+    ExamResultSummary:
+      type: object
+      description: 教师端考试汇总（仅创建者或 admin）
+      required: [exam_id, total_sessions, submitted, average_score, items]
+      properties:
+        exam_id: { type: integer, format: int64 }
+        total_sessions: { type: integer, description: 会话总数（含 in_progress） }
+        submitted:
+          type: integer
+          description: 已交卷数 = status ∈ {submitted, expired}（到期自动交卷计入，C-20）
+        average_score:
+          type: number
+          multipleOf: 0.01
+          description: |
+            平均分（两位小数）：仅对**已判分会话**（`status ∈ {submitted, expired}`）的 `score` 求均值。
+            除零口径（v1.0.2 / CHG-031）：**无已判分会话时返回 `0`**，不返回 null、不报 5xx；
+            字段保持 `required` + `number`，可被硬断言。
+        items:
+          type: array
+          items:
+            type: object
+            required: [student_id, display_name, status]
+            properties:
+              student_id: { type: integer, format: int64 }
+              display_name: { type: string }
+              status:
+                type: string
+                enum: [in_progress, submitted, expired]
+                description: 与 SessionState.status 同一枚举（C-20）；expired 计为已交卷且成绩可读
+              score: { type: number, minimum: 0, multipleOf: 0.01 }
+              submitted_at: { type: string, format: date-time }
+
+    AuditLog:
+      type: object
+      description: |
+        审计记录（AC-22）。`actor_id`/`ip` 仍为**必填**（字段总是出现，C-05），但 **`actor_id` 可为 null**
+        （v1.0.3 / CHG-035 / P-011）：系统操作与 CLI 记录（备份清理、初始化、定时任务、无请求上下文的动作）
+        没有登录主体，BE-006 以 `actor_id=None` 落库，**不得**伪造成某个用户 id。
+        约定：**系统操作 `ip` 记 `"-"`**（不是 null、不是空串）；用户操作的 `ip` 必须是真实来源地址字符串。
+        `user_agent`/`detail` 可选，`detail` 必须脱敏（禁止明文密码/答案）。
+      required: [id, actor_id, action, target_type, target_id, ip, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        actor_id:
+          type: [integer, "null"]
+          format: int64
+          description: |
+            操作者用户 id（v1.0.3 / CHG-035）：用户触发的写操作 → 真实 `users.id`；
+            **系统操作 / CLI 记录 → `null`**（备份清理、初始化、定时任务等无登录主体的动作）。
+            字段必填（总是出现），值可为 null；读取方必须容忍 null，不得假设恒为整数。
+        action:
+          type: string
+          maxLength: 64
+          description: 动作名，如 question.create / session.submit
+        target_type: { type: string, maxLength: 32 }
+        target_id: { type: string, maxLength: 64 }
+        ip:
+          type: string
+          description: 客户端 IP（必填，AC-22）；**系统操作固定记 `"-"`**（v1.0.3 / CHG-035），用户操作为真实来源地址
+        user_agent: { type: string, maxLength: 255, description: 客户端 UA（可选，C-05 建议） }
+        detail:
+          type: object
+          additionalProperties: true
+          description: 脱敏后的变更详情（禁止记录明文密码；docs/11 §audit_logs）
+        created_at: { type: string, format: date-time }
+
+    AuditLogPage:
+      type: object
+      description: 分页审计记录（口径同步 v1.0.3 / CHG-035）：`items[].actor_id` 可为 `null`（系统操作），`items[].ip` 系统操作为 `"-"`。
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AuditLog' }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }

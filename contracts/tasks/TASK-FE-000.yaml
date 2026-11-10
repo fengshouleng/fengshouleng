@@ -1,0 +1,43 @@
+task_id: TASK-FE-000
+title: 前端脚手架（Vite+React+TS、路由、请求层、CSRF/401 处理、契约类型生成）
+wbs_ref: T0.4 / T2.1
+owner_role: frontend-impl
+context: spawn
+model_tier: balanced
+depends_on: []
+contract_refs:
+  - "contracts/openapi.yaml#/components/securitySchemes/sessionCookie"
+  - "contracts/openapi.yaml#/components/schemas/Error"
+
+write_scope:
+  - web/**
+read_scope:
+  - contracts/openapi.yaml
+  - docs/10-arch.md
+  - docs/12-permission-matrix.md
+
+must:
+  - Vite + React 18 + TS + Ant Design + TanStack Query + React Router 初始化
+  - web/src/api/client.ts：fetch 封装，自动带 Cookie、非 GET 注入 X-CSRF-Token、401 跳登录、错误体解析为 {code,message,request_id}
+  - 类型生成脚本：openapi-typescript contracts/openapi.yaml -> src/api/schema.d.ts（package.json script）
+  - 基础布局（侧边栏 + 顶栏 + 用户信息）、路由骨架、404 页
+  - 环境变量 VITE_API_BASE 默认 /api
+
+acceptance:
+  - "pnpm lint / tsc --noEmit / build 通过（CI 执行）"
+  - "请求层单测：401 跳转、CSRF 注入、错误码映射"
+  - "diff 未越出 web/"
+
+forbidden:
+  - 写业务页面（留给 TASK-FE-002 起）
+  - 修改 contracts/**、docs/**
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pnpm lint && pnpm tsc --noEmit && pnpm build", passed: 0, failed: 0 }
+  open_questions: []
+  next: "可派发 TASK-FE-001"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

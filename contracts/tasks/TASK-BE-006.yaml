@@ -1,0 +1,48 @@
+task_id: TASK-BE-006
+title: 审计服务、审计查询与保留策略
+wbs_ref: T1.7
+owner_role: backend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-001]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1audit-logs"
+  - "contracts/openapi.yaml#/components/schemas/AuditLog"
+
+write_scope:
+  - server/app/audit/**
+  - server/app/models/audit_log.py
+  - server/migrations/versions/*_audit.py
+  - server/tests/audit/**
+read_scope:
+  - contracts/openapi.yaml
+  - docs/11-data-model.md
+  - docs/12-permission-matrix.md
+  - server/app/**
+
+must:
+  - 复用 TASK-BE-001 已建的 audit_logs 表与最小 service（不重复建表；缺字段/索引时本卡补一条增量迁移）
+  - app/audit/service.py 收敛为统一入口：record(actor_id, action, target_type, target_id, ip, user_agent, detail)，失败不阻断业务但记录日志告警
+  - 敏感字段过滤：password / token / answer 明文永不落 detail
+  - GET /audit-logs：仅 admin；支持 action/actor_id/from/to/分页；返回契约 schema
+  - 保留策略：清理 180 天前记录（CLI 命令 `python -m app.audit.cleanup` + 可选 cron 说明）
+  - 若发现 BE-001/BE-002 已内联写 audit_logs，收敛为调用本 service（改动范围限列出的冲突文件，并在 open_questions 说明）
+
+acceptance:
+  - "pytest：AC-21（教师 403、admin 200）、AC-22（写操作后有记录且字段完整）"
+  - "敏感字段过滤用例：detail 不含 password/token 明文"
+  - "契约测试：/audit-logs schema 一致"
+
+forbidden:
+  - 修改 contracts/**、其他模块业务逻辑
+  - 在 detail 中存明文密码/会话令牌/正确答案
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pytest -q server/tests/audit", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-FE-006 管理后台可消费 /audit-logs"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

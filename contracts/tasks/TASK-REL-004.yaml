@@ -1,0 +1,46 @@
+task_id: TASK-REL-004
+title: 生产上线、冒烟与回滚演练（G4 通过后执行）
+wbs_ref: T4.5
+owner_role: release-sre
+context: spawn
+model_tier: strong
+depends_on: [TASK-REL-001, TASK-REL-002, TASK-REL-003]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1healthz"
+
+write_scope:
+  - deploy/release/**
+  - docs/73-release-checklist.md
+  - docs/74-incident-template.md
+read_scope:
+  - docs/61-gate-report.md（QA 放行报告）
+  - docs/70-runbook.md
+  - docs/71-backup-restore.md
+  - docs/72-monitoring.md
+
+must:
+  - docs/73-release-checklist.md：上线前检查（G4 报告、备份最新、迁移演练、域名证书、回滚镜像 tag、联系人）
+  - 上线脚本：拉取镜像 → 数据库迁移（含备份点确认）→ 滚动重启 → 健康检查 → 冒烟（登录/建题/考试最小链路）
+  - 回滚脚本：切回上一镜像 tag + 迁移回滚策略（向前兼容优先；不可回滚迁移需事前评审）
+  - 回滚演练：在 staging 完整演练一次并记录耗时（目标 < 15 分钟）
+  - docs/74-incident-template.md：故障分级、止损、复盘模板
+  - 上线后 24h 观察计划：healthz、错误率、慢请求、备份新鲜度
+
+acceptance:
+  - "staging 演练：上线→冒烟→回滚→冒烟 全流程通过并留证据"
+  - "生产上线必须人工审批（DSH approval = ask），脚本不自批"
+  - "上线记录含 commit、镜像 tag、迁移版本、回滚点"
+
+forbidden:
+  - 未经人工批准的自动上线
+  - 跳过备份直接迁移
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "bash deploy/release/deploy.sh --env staging && bash deploy/release/rollback.sh --env staging", passed: 0, failed: 0, verified: false }
+  open_questions: []
+  next: "G5 上线验收 + 24h 观察"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 30 }

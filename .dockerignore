@@ -1,0 +1,24 @@
+# Docker 构建上下文排除项（GAP-03）
+# 依据 deploy/Dockerfile.* 的 COPY 范围；保持镜像最小、构建可复现。
+.git
+.github
+docs
+tests
+reports
+deploy/evidence
+
+**/node_modules
+web/dist
+web/coverage
+
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+.venv
+venv
+
+.env
+**/.env.local
+**/*.log

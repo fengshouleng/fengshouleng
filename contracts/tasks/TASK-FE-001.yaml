@@ -1,0 +1,48 @@
+task_id: TASK-FE-001
+title: 登录页与角色路由（auth/me 引导、RBAC 路由守卫）
+wbs_ref: T2.2
+owner_role: frontend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-FE-000, TASK-BE-001]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1auth~1login"
+  - "contracts/openapi.yaml#/paths/~1auth~1me"
+  - "contracts/openapi.yaml#/paths/~1auth~1logout"
+
+write_scope:
+  - web/src/pages/login/**
+  - web/src/routes.tsx
+  - web/src/hooks/useAuth.ts
+  - web/src/components/RequireRole.tsx
+  - web/tests/login.test.tsx
+read_scope:
+  - contracts/openapi.yaml
+  - docs/12-permission-matrix.md
+  - web/src/api/client.ts
+
+must:
+  - 登录页：用户名/密码、错误提示（不区分账号是否存在）、成功跳转按角色
+  - 应用启动先 GET /auth/me 恢复会话；401 停留在登录页
+  - RequireRole 路由守卫：student/teacher/admin 各自可进的路由组
+  - 登出：POST /auth/logout 后清空缓存并跳登录
+  - 关键元素加 data-testid（login-username/login-password/login-submit），供 E2E
+
+acceptance:
+  - "组件测试：登录成功跳转、失败提示、角色守卫拦截"
+  - "pnpm lint / tsc --noEmit / build 通过"
+  - "diff 未越界"
+
+forbidden:
+  - 修改 api/client.ts（除必要扩展须在 open_questions 说明）
+  - 修改 contracts/**、server/**
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pnpm test -- login && pnpm lint && pnpm tsc --noEmit && pnpm build", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-FE-002 题库管理页"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

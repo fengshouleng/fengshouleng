@@ -1,0 +1,47 @@
+task_id: TASK-REL-000
+title: CI 流水线（lint/type/test/契约/构建），本机 shell 不可用时的唯一验证通道
+wbs_ref: T4.1
+owner_role: release-sre
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-000, TASK-FE-000]
+contract_refs:
+  - "contracts/openapi.yaml"
+
+write_scope:
+  - .github/workflows/**
+  - deploy/ci/**
+read_scope:
+  - server/pyproject.toml
+  - web/package.json
+  - tests/**
+  - contracts/openapi.yaml
+  - docs/decision-log.md
+
+must:
+  - `.github/workflows/ci.yml`：pull_request 与 push 到 main 触发
+  - job backend：python 3.12 → pip install -e "server[dev]" → ruff check server → mypy server/app → pytest -q server
+  - job frontend：node 20 → pnpm install --frozen-lockfile（无锁文件时先 install）→ pnpm lint → pnpm tsc --noEmit → pnpm test → pnpm build
+  - job contract：openapi-spec-validator contracts/openapi.yaml → pytest tests/contract -q（仓库根执行）
+  - 路径过滤：server/** 触发 backend，web/** 触发 frontend，contracts/** 与 tests/** 触发 contract；任一失败 overall fail
+  - 缓存：pip 与 pnpm store；并发取消旧运行
+  - README 增加「CI 判据」小节占位（或输出到 open_questions 由 Lead 统改 README）
+
+acceptance:
+  - "workflow 文件 YAML 合法（自查缩进与 action 版本）"
+  - "三个 job 的命令与各 README/任务卡一致，不引入额外本地依赖"
+  - "说明如何本地复现（docker compose 可选）"
+
+forbidden:
+  - 修改 server/**、web/**、contracts/**、tests/**
+  - 在 CI 中写入生产密钥或执行部署
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "YAML 自检（无 shell）", passed: 0, failed: 0, verified: false }
+  open_questions: []
+  next: "TASK-REL-001 部署骨架"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

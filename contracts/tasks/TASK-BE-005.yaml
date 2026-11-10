@@ -1,0 +1,52 @@
+task_id: TASK-BE-005
+title: 成绩明细/考试汇总/错题本（读接口）
+wbs_ref: T1.5 + T1.6
+owner_role: backend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-004]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1sessions~1{session_id}~1result"
+  - "contracts/openapi.yaml#/paths/~1me~1results"
+  - "contracts/openapi.yaml#/paths/~1me~1wrong-questions"
+  - "contracts/openapi.yaml#/paths/~1exams~1{exam_id}~1results"
+
+write_scope:
+  - server/app/reports/**
+  - server/app/models/wrong_book.py
+  - server/migrations/versions/*_wrong_book.py
+  - server/tests/reports/**
+read_scope:
+  - contracts/openapi.yaml
+  - docs/11-data-model.md
+  - docs/12-permission-matrix.md
+  - server/app/sessions/service.py
+  - server/app/scoring/**
+
+must:
+  - wrong_book 表迁移 + 交卷时 upsert（错题 wrong_count+1、last_wrong_at 更新），去重规则按 (student_id, question_id)
+  - GET /sessions/{id}/result：本人可看，教师仅自己考试的汇总；未交卷 409 NOT_SUBMITTED；返回逐题 selected/correct_answer/is_correct/earned_points/points/explanation
+  - GET /me/results：当前学生分页成绩列表（exam_title、score、total_points、submitted_at）
+  - GET /me/wrong-questions：当前学生分页错题本（去重、wrong_count 降序）
+  - GET /exams/{id}/results：教师自己的考试汇总（total_sessions/submitted/average_score + 学生明细），归属校验 403
+  - 所有读接口不得返回未交卷学生的答案；教师汇总不含逐题答案（V1）
+  - 审计：result.view（可选，P2）
+
+acceptance:
+  - "pytest：AC-18/19/20 全绿；越权访问他人 result 403；未交卷 409"
+  - "错题本去重与计数：同题错两次只出现一次且 wrong_count=2"
+  - "契约测试：4 个读接口 schema 一致"
+
+forbidden:
+  - 修改 contracts/**、sessions/scoring 的写逻辑（只读消费）
+  - 返回他人答案或教师越权查看学生逐题答案
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pytest -q server/tests/reports", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-FE-005 成绩页；TASK-QA-001 E2E"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

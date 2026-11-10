@@ -1,0 +1,46 @@
+{
+  "name": "mcq-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "选择题答题系统前端（React 18 + Vite + TS + Ant Design + TanStack Query）",
+  "type": "module",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext .ts,.tsx",
+    "tsc": "tsc",
+    "test": "vitest run --testTimeout=20000",
+    "test:watch": "vitest",
+    "gen:types": "openapi-typescript ../contracts/openapi.yaml -o src/api/schema.d.ts"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.0.0",
+    "antd": "^5.20.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^6.4.8",
+    "@testing-library/react": "^16.0.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "jsdom": "^24.1.0",
+    "openapi-typescript": "^7.0.0",
+    "typescript": "~5.4.5",
+    "vite": "^5.4.0",
+    "vitest": "^2.0.5"
+  }
+}

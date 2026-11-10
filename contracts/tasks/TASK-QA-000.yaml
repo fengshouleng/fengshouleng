@@ -1,0 +1,46 @@
+task_id: TASK-QA-000
+title: 测试计划与契约测试骨架（AC 映射、OpenAPI 校验、测试数据策略）
+wbs_ref: T3.1
+owner_role: qa-verify
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-000, TASK-FE-000]
+contract_refs:
+  - "contracts/openapi.yaml"
+
+write_scope:
+  - tests/**
+  - docs/60-test-plan.md
+  - docs/61-gate-report.md
+read_scope:
+  - docs/00-prd.md
+  - docs/12-permission-matrix.md
+  - contracts/openapi.yaml
+  - server/**
+  - web/**
+
+must:
+  - docs/60-test-plan.md：AC-01..AC-22 全部映射到用例 ID（E2E/接口/安全/性能），标注无法自动化的项
+  - tests/contract/：OpenAPI 结构校验（openapi-spec-validator）+ 错误码约定检查
+  - tests/contract/test_ac_matrix.py：扫描测试用例与 AC 映射，缺失即失败
+  - 测试数据工厂：独立于生产代码（tests/factories/），可重复生成学生/教师/管理员/题库/试卷/考试
+  - E2E 用例骨架：tests/e2e/ 关键链路文件（登录→建题→组卷→发考试→作答→判分→成绩），允许先 skip 并标注依赖任务卡
+
+acceptance:
+  - "openapi-spec-validator 校验 contracts/openapi.yaml 通过"
+  - "AC 矩阵覆盖 100%，缺失 AC 在 CI 中失败"
+  - "测试计划包含环境前置、数据准备、执行顺序、证据存放路径"
+
+forbidden:
+  - 修改 server/** 或 web/**（只报不修）
+  - 修改 contracts/**
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "python -m pytest tests/contract -q", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-QA-001 E2E 关键链路 / TASK-QA-002 安全负例"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

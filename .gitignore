@@ -1,0 +1,45 @@
+# 仓库根 .gitignore（首次推送前需要；各子目录另有局部 .gitignore）
+# 目标：只提交源码、契约、文档、配置模板与锁文件；不提交运行时产物与密钥。
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.db
+*.sqlite3
+
+# Node
+node_modules/
+web/dist/
+web/coverage/
+*.tsbuildinfo
+
+# 环境与密钥（模板 .env.example 必须提交）
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# 运行与证据产物
+reports/
+deploy/evidence/*
+!deploy/evidence/README.md
+.run/
+*.log
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 本机测试/构建产物（不入库）
+*.egg-info/
+pytest-of-*/
+tests/perf/data/

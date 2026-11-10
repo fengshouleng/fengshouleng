@@ -1,0 +1,50 @@
+task_id: TASK-BE-002
+title: 题库 CRUD 与批量导入（含幂等去重与引用保护）
+wbs_ref: T1.2
+owner_role: backend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-000]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1questions"
+  - "contracts/openapi.yaml#/paths/~1questions/import"
+  - "contracts/openapi.yaml#/paths/~1questions~1{question_id}"
+  - "contracts/openapi.yaml#/components/schemas/Question"
+
+write_scope:
+  - server/app/questions/**
+  - server/app/models/question.py
+  - server/migrations/versions/*_questions.py
+  - server/tests/questions/**
+read_scope:
+  - contracts/openapi.yaml
+  - docs/11-data-model.md
+  - docs/12-permission-matrix.md
+  - docs/00-prd.md
+
+must:
+  - questions 表迁移（含 answer/options/tags jsonb、软删除、导入去重唯一键）
+  - GET /questions：教师仅自己的（admin 全部）、支持 keyword/type/tag/分页
+  - POST/PUT/DELETE /questions/{id}：归属校验（403）、软删除、被试卷引用时 409 QUESTION_IN_USE
+  - POST /questions/import：Excel/CSV 解析、逐行校验、部分成功（200 + imported/failed[{row,reason}]）、重复导入幂等（按 owner+type+题干）
+  - 参数校验：单选恰好 1 个答案、多选 ≥2 个答案、判断题选项固定 A/B
+  - 审计：question.create/update/delete/import
+
+acceptance:
+  - "pytest：CRUD、归属 403、引用 409、部分成功导入、重复导入幂等全部通过"
+  - "契约测试：三个 interface 的 schema/错误码一致"
+  - "ruff/mypy 通过；diff 未越界"
+
+forbidden:
+  - 修改 contracts/**、其他模块
+  - 物理删除题目
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pytest -q server/tests/questions", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-BE-003 组卷依赖本卡"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

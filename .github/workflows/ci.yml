@@ -1,0 +1,369 @@
+# .github/workflows/ci.yml
+# TASK-REL-000 — CI 流水线：lint / type / test / 契约 / 构建。
+# 背景：本机 shell 不可用（pwsh 0xC0000142，RISK-08），本文件是当前唯一的自动化验证通道。
+# 本地复现方式与「CI 判据」见 .github/workflows/README.md。
+#
+# 设计约束（与任务卡 / 各 README 对齐）：
+#   backend  : 在 server/ 下 pip install -e ".[dev]" → ruff check . → mypy app → pytest -q
+#   frontend : 在 web/ 下 pnpm install → pnpm lint → pnpm tsc --noEmit → pnpm test → pnpm build
+#   contract : 仓库根 openapi-spec-validator contracts/openapi.yaml → pytest tests/contract
+# 任何 job 失败 → 汇总门 ci-gate 失败（整体 fail）。
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# 只读仓库内容：CI 不写回、不部署、不使用任何密钥
+permissions:
+  contents: read
+
+# 同一分支/同一 PR 只保留最新一次运行（取消旧运行）
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 变更范围识别：用 git diff 计算哪些 job 需要跑（等价于路径过滤，但可被 job 的 if 使用）
+  # ---------------------------------------------------------------------------
+  changes:
+    name: 变更范围识别
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      contract: ${{ steps.filter.outputs.contract }}
+    steps:
+      - name: 检出仓库（需要完整历史才能 diff）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        name: 按路径计算 backend/frontend/contract
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -uo pipefail
+
+          force_all=false
+          files=""
+
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            base="$(git merge-base "origin/${BASE_REF}" HEAD 2>/dev/null || true)"
+          else
+            base="${BEFORE_SHA}"
+            # 新分支 / 强制推送 / 首次推送时 before 可能为全 0 或不存在
+            if [ -z "${base}" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              base="$(git rev-parse HEAD~1 2>/dev/null || true)"
+            fi
+          fi
+
+          if [ -n "${base}" ]; then
+            files="$(git diff --name-only "${base}" HEAD 2>/dev/null || true)"
+          fi
+
+          if [ -z "${files}" ]; then
+            force_all=true
+            echo "::notice::无法从 git 计算变更集（或变更集为空），退回全量运行三个 job"
+          fi
+
+          backend=false
+          frontend=false
+          contract=false
+
+          if [ "${force_all}" = "true" ]; then
+            backend=true
+            frontend=true
+            contract=true
+          else
+            while IFS= read -r file; do
+              if [ -z "${file}" ]; then
+                continue
+              fi
+              case "${file}" in
+                server/*) backend=true ;;
+                web/*) frontend=true ;;
+                contracts/* | tests/*) contract=true ;;
+                # workflow 自身变更：三个 job 全跑，确保改动被真正验证
+                .github/workflows/*)
+                  backend=true
+                  frontend=true
+                  contract=true
+                  ;;
+              esac
+            done <<< "${files}"
+          fi
+
+          {
+            echo "backend=${backend}"
+            echo "frontend=${frontend}"
+            echo "contract=${contract}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "---- 变更文件 ----"
+          echo "${files}"
+
+  # ---------------------------------------------------------------------------
+  # 后端：ruff + mypy + pytest（工作目录固定 server/，与 pyproject 配置一致）
+  # ---------------------------------------------------------------------------
+  backend:
+    name: backend (ruff / mypy / pytest)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 准备日志目录（失败时归档）
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/ci-logs"
+
+      - name: 安装 Python 3.12 并缓存 pip
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: server/pyproject.toml
+
+      - name: 安装后端依赖（可编辑安装 + dev extras）
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: ruff check
+        shell: bash
+        run: |
+          set -o pipefail
+          ruff check . 2>&1 | tee "${RUNNER_TEMP}/ci-logs/backend-ruff.log"
+
+      - name: mypy app
+        shell: bash
+        run: |
+          set -o pipefail
+          mypy app 2>&1 | tee "${RUNNER_TEMP}/ci-logs/backend-mypy.log"
+
+      - name: pytest
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee "${RUNNER_TEMP}/ci-logs/backend-pytest.log"
+
+      - name: 归档失败日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 前端：pnpm install → lint → tsc --noEmit → test → build（工作目录 web/）
+  # 注意：仓库当前没有 pnpm-lock.yaml，故 install 步骤带容错；有锁文件时必须 frozen。
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: frontend (lint / tsc / test / build)
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 准备日志目录（失败时归档）
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/ci-logs"
+
+      # pnpm 必须在 setup-node 之前就绪（setup-node 的 pnpm 缓存依赖它）
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 仓库可能尚无 pnpm-lock.yaml：用 actions/cache 缓存 pnpm store，
+      # 键里包含锁文件哈希（缺失时哈希为空，仍可命中 restore-keys）。
+      - name: 缓存 pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: 安装前端依赖
+        shell: bash
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            echo "使用 pnpm-lock.yaml → pnpm install --frozen-lockfile"
+            pnpm install --frozen-lockfile
+          else
+            echo "::notice title=缺少 pnpm-lock.yaml::仓库尚无锁文件，本步退回 --no-frozen-lockfile；请尽快提交 web/pnpm-lock.yaml 以恢复可复现安装"
+            pnpm install --no-frozen-lockfile
+          fi
+
+      - name: pnpm lint
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm lint 2>&1 | tee "${RUNNER_TEMP}/ci-logs/frontend-lint.log"
+
+      - name: pnpm tsc --noEmit
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm tsc --noEmit 2>&1 | tee "${RUNNER_TEMP}/ci-logs/frontend-tsc.log"
+
+      - name: pnpm test（vitest run）
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm test 2>&1 | tee "${RUNNER_TEMP}/ci-logs/frontend-test.log"
+
+      - name: pnpm build
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm build 2>&1 | tee "${RUNNER_TEMP}/ci-logs/frontend-build.log"
+
+      # 契约类型生成：当前 src/ 没有 import schema.d.ts，因此它不是 lint/tsc 的前置。
+      # 放在 build 之后、且不阻断（continue-on-error）：失败只告警，不影响门禁结论。
+      - name: pnpm gen:types（契约类型生成，非阻断）
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          if pnpm gen:types 2>&1 | tee "${RUNNER_TEMP}/ci-logs/frontend-gen-types.log"; then
+            echo "::notice title=gen-types OK::openapi-typescript 已生成 web/src/api/schema.d.ts（该文件当前未被源码引用）"
+          else
+            echo "::warning title=gen-types 失败::openapi-typescript 未生成 web/src/api/schema.d.ts；契约变更时前端类型会滞后，请检查 contracts/openapi.yaml 与 openapi-typescript 版本（本地复现：cd web && pnpm gen:types）"
+            exit 0
+          fi
+
+      - name: 归档失败日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 契约：仓库根执行，只依赖 tests/requirements.txt（不装 server/）
+  # ---------------------------------------------------------------------------
+  contract:
+    name: contract (openapi-spec-validator / pytest tests/contract)
+    needs: changes
+    if: needs.changes.outputs.contract == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 准备日志目录（失败时归档）
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/ci-logs"
+
+      - name: 安装 Python 3.12 并缓存 pip
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+
+      - name: 安装契约测试依赖
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r tests/requirements.txt
+
+      - name: 校验 OpenAPI 契约
+        shell: bash
+        run: |
+          set -o pipefail
+          openapi-spec-validator contracts/openapi.yaml 2>&1 | tee "${RUNNER_TEMP}/ci-logs/contract-validator.log"
+
+      - name: 契约测试（pytest tests/contract）
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest tests/contract -q 2>&1 | tee "${RUNNER_TEMP}/ci-logs/contract-pytest.log"
+
+      - name: 归档失败日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 汇总门：任一 job 失败 / 取消 → 本 job 失败；被路径过滤跳过的 job 不算失败
+  # ---------------------------------------------------------------------------
+  ci-gate:
+    name: CI 汇总门
+    if: always()
+    needs: [changes, backend, frontend, contract]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 汇总各 job 结果
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          CONTRACT_RESULT: ${{ needs.contract.result }}
+        run: |
+          set -euo pipefail
+
+          echo "changes=${CHANGES_RESULT} backend=${BACKEND_RESULT} frontend=${FRONTEND_RESULT} contract=${CONTRACT_RESULT}"
+
+          if [ "${CHANGES_RESULT}" != "success" ]; then
+            echo "::error::变更范围识别失败（${CHANGES_RESULT}），无法判定需要运行哪些 job"
+            exit 1
+          fi
+
+          failed=0
+          for result in "${BACKEND_RESULT}" "${FRONTEND_RESULT}" "${CONTRACT_RESULT}"; do
+            case "${result}" in
+              success | skipped) ;;
+              *)
+                echo "::error::存在未通过的 job（result=${result}）"
+                failed=1
+                ;;
+            esac
+          done
+
+          if [ "${failed}" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "::notice::CI 通过（未变更的模块其 job 显示 skipped 属正常）"

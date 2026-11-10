@@ -1,0 +1,47 @@
+task_id: TASK-QA-002
+title: 权限负例与安全基线（IDOR/CSRF/越权/注入/XSS/弱密码/枚举）
+wbs_ref: T3.3
+owner_role: qa-verify
+context: spawn
+model_tier: strong
+depends_on: [TASK-BE-001, TASK-BE-002, TASK-BE-003, TASK-BE-004, TASK-BE-005]
+contract_refs:
+  - "contracts/openapi.yaml"
+  - "docs/12-permission-matrix.md"
+
+write_scope:
+  - tests/security/**
+  - reports/**
+read_scope:
+  - docs/12-permission-matrix.md
+  - docs/00-prd.md
+  - server/app/**
+  - contracts/openapi.yaml
+
+must:
+  - 权限矩阵逐行负例：每个「❌」组合一个用例（学生调 /users、教师改他人题目、学生 A 读学生 B 的 session/result、未登录访问受保护接口）
+  - 会话与 CSRF：过期会话 401、缺失/错误 CSRF 403、登出后旧 Cookie 失效、停用账号即时 401
+  - 注入与 XSS：题干/解析含 `<script>` 与 SQL 关键字（`' OR 1=1 --`）时正确转义、参数化查询不报错不泄漏
+  - 密码策略：明文不落库、响应与日志不含密码、弱密码拒绝（长度/复杂度）
+  - 枚举防护：错误码/消息不区分「账号不存在」与「密码错误」
+  - 越权读取考试：学生访问 draft 考试 404/403；教师访问他人考试汇总 403
+  - 输出：每个用例标注 AC 编号；失败即 P0 缺陷单（AC、复现、期望/实际、证据）
+
+acceptance:
+  - "权限矩阵覆盖率 100%（无 ❌ 遗漏）"
+  - "全部用例通过或已开缺陷单并附证据"
+  - "报告写入 docs/61-gate-report.md（G4 证据）"
+
+forbidden:
+  - 修改 server/**、web/**、contracts/**
+  - 在测试中写入真实用户数据或生产环境
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pytest -q tests/security", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-QA-003 性能冒烟"
+
+circuit_breaker: { max_tool_calls: 60, timeout_min: 30 }

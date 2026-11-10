@@ -1,0 +1,44 @@
+task_id: TASK-FE-003
+title: 组卷页（选题、设分、排序、总分校验）
+wbs_ref: T2.4
+owner_role: frontend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-FE-000, TASK-BE-003]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1papers"
+  - "contracts/openapi.yaml#/paths/~1papers~1{paper_id}"
+
+write_scope:
+  - web/src/pages/papers/**
+  - web/tests/papers.test.tsx
+  - web/src/components/AppLayout.tsx（仅新增「组卷」菜单入口）
+  - web/src/routes.tsx（仅挂载试卷路由）
+read_scope:
+  - contracts/openapi.yaml
+  - docs/11-data-model.md
+  - web/src/pages/questions/**
+
+must:
+  - 左侧题库选择区（按 keyword/type/tag 筛选、多选勾选），右侧已选题目列表
+  - 每题可设分值（number，>0，2 位小数）与排序（上移/下移 → order_no）；多选可切换 partial_rule
+  - 实时显示总分；提交前前端校验总分与每题分值合法，后端 422 错误回显到字段
+  - 试卷状态 draft 可编辑、frozen 只读并提示「已冻结：用于已发布考试」
+  - data-testid：papers-save、papers-total-points、papers-points-{question_id}
+
+acceptance:
+  - "组件测试：选题/分值/排序/总分校验、frozen 只读"
+  - "pnpm lint / tsc --noEmit / build 通过"
+
+forbidden:
+  - 修改 contracts/**、server/**、web/src/api/client.ts
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pnpm test -- papers && pnpm lint && pnpm tsc --noEmit", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-FE-004 考试页"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

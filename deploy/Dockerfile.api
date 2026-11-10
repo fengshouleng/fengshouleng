@@ -1,0 +1,79 @@
+# syntax=docker/dockerfile:1.7
+# deploy/Dockerfile.api — 后端镜像（TASK-REL-001 / ADR-001、ADR-008）
+#
+# 构建上下文 = 仓库根（compose: build.context: ..），原因：
+#   - 依赖声明唯一来源是 server/pyproject.toml（server/ 下无 requirements.txt，勿假设其存在）
+#   - 运行期还需 server/alembic.ini + server/migrations（Alembic 升级）
+# 构建：docker compose -f deploy/docker-compose.yml build api
+#
+# 多阶段：builder 负责建 venv 装依赖，runtime 只带 venv 与迁移文件，非 root 运行。
+# 基础镜像固定到 patch 版本，避免 `3.12-slim` 漂移导致不可复现构建。
+
+ARG PYTHON_VERSION=3.12.7
+
+# ---------------------------------------------------------------------------
+# builder：创建 venv 并安装 server（非 editable，产物不可在容器内改动）
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+WORKDIR /build
+
+# pyproject 的 readme 指向 README.md，setuptools 构建时需要该文件
+COPY server/pyproject.toml server/README.md ./
+COPY server/app ./app
+
+# 纯 Python/预编译 wheel 依赖（fastapi/uvicorn/argon2-cffi/sqlalchemy）在 slim 上无需编译器；
+# 若将来引入需要编译的依赖，在本阶段追加 build-essential，勿污染 runtime。
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && pip install .
+
+# Postgres 驱动：server/pyproject.toml 目前未声明 psycopg（本地/测试默认 SQLite），
+# 但生产 DATABASE_URL 使用 postgresql+psycopg://（server/.env.example 同口径）。
+# 由部署层显式补齐；该缺口已登记并应回填到 server/pyproject.toml（见 docs/70-runbook.md §11）。
+RUN pip install "psycopg[binary]>=3.2,<4"
+
+# ---------------------------------------------------------------------------
+# runtime：仅 venv + 迁移文件 + 入口脚本；UID/GID 10001 非 root
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONFAULTHANDLER=1 \
+    PATH="/opt/venv/bin:${PATH}" \
+    APP_ENV=production \
+    PORT=8000
+
+# 无 shell 的专用账号（10001 固定，便于宿主/卷权限排查）
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid 10001 --no-create-home \
+       --home-dir /app --shell /usr/sbin/nologin app
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+
+# Alembic：alembic.ini 中 script_location = migrations，且 prepend_sys_path = .
+# 因此迁移目录与 ini 必须落在工作目录 /app（代码本体已在 venv site-packages 内）
+COPY server/alembic.ini ./alembic.ini
+COPY server/migrations ./migrations
+
+COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0555 /usr/local/bin/docker-entrypoint.sh \
+    && chown -R app:app /app
+
+USER app
+
+EXPOSE 8000
+
+# 入口脚本：先 alembic upgrade head（RUN_MIGRATIONS=false 可跳过），再 exec 启动命令；
+# 无 CMD 时默认 uvicorn，参数由 compose 的 FORWARDED_ALLOW_IPS/PORT 控制（见脚本）
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

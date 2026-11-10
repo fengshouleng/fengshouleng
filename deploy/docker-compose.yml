@@ -1,0 +1,192 @@
+# deploy/docker-compose.yml
+# TASK-REL-001（T0.6 + T4.2）/ ADR-008：nginx + api + postgres + backup 四服务。
+#
+# 同一个文件服务 staging 与 production，差异**只**来自 --env-file 与项目名：
+#   staging : docker compose --env-file .env.staging -p exam-staging up -d
+#   prod    : docker compose --env-file .env.prod    -p exam-prod    up -d
+# 因此禁止在文件里写死域名/端口/密码；全部走变量。
+#
+# 变量注入口径：一律使用 Compose 插值（${VAR}），不额外声明 service.env_file，
+# 避免 `--env-file X` 与 `env_file: Y` 指向不同文件造成配置漂移。
+# 必填变量用 `${VAR:?message}`：未设置时 `docker compose config` 直接失败，
+# 不允许静默回落到默认密码。
+#
+# 网络隔离：edge（nginx ↔ api）、data（api ↔ postgres/backup，internal 无出网）。
+# 持久化：命名卷 pgdata（数据库数据）、backups（备份产物，保留策略见 backup.sh）。
+#
+# 结构自检（无需 Docker 也可人工核对）：
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example -p exam-config-check config -q
+# 详见 docs/70-runbook.md §2。
+
+name: ${COMPOSE_PROJECT_NAME:-exam}
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16：仅 data 网络可达，不发布端口（排障走 docker compose exec）。
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB 未设置（复制 deploy/.env.example 为 .env 后填写）}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER 未设置（复制 deploy/.env.example 为 .env 后填写）}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未设置（禁止提交真实密码）}
+      # 独立子目录，避免未来切换镜像时与 initdb 的默认目录冲突
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # $$ 由 Compose 转义为容器内的 $，读取容器自身的 POSTGRES_* 环境变量
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 60s
+    security_opt:
+      - "no-new-privileges:true"
+    networks:
+      - data
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # API：uvicorn（镜像内非 root）。启动时先 alembic upgrade head（见 entrypoint）。
+  # 健康检查用 /healthz（ADR-008 / contracts/openapi.yaml#/paths/~1healthz），
+  # 不依赖 curl（slim 镜像不装），用 venv 内的 python 发起请求。
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    image: exam-api:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-staging}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      # 密码直接拼进 URL：含 @ : / % # 等字符时必须在 .env 中做 URL 编码
+      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-8}
+      API_PREFIX: ${API_PREFIX:-/api}
+      # staging 纯 HTTP 冒烟时需设 false（Secure Cookie 不会被 http 客户端回传）；
+      # TLS 就绪后必须恢复 true（ADR-004）
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      # 启动时自动执行迁移；排障/回滚时可设 false 跳过
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      # uvicorn worker 进程数。单进程吃不满多核，100 并发下 p95 会超门槛（docs/61 §10.2）；
+      # 调大时务必同步缩小每进程连接池，保证 WEB_CONCURRENCY × (size + overflow) < 100
+      # （postgres 镜像默认 max_connections=100）。
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+      # api 未发布端口，只可能被 edge 网络内的 nginx 访问，故信任其 X-Forwarded-*
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-*}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    security_opt:
+      - "no-new-privileges:true"
+    networks:
+      - edge
+      - data
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Nginx：TLS 终止（占位）、托管 web 构建产物、/api 反代 api:8000。
+  # 默认只发布 HTTP；启用 TLS 时再打开 443 映射并挂载证书（见 nginx.conf 尾部）。
+  # ---------------------------------------------------------------------------
+  nginx:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    image: exam-web:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HTTP_PORT:-8080}:80"
+      # - "${NGINX_HTTPS_PORT:-8443}:443"   # TLS 证书就绪后启用（docs/70-runbook.md §8）
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      # /nginx-health 由 nginx 直接返回，不经过 api：避免 api 抖动导致 nginx 被误判不健康
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - "no-new-privileges:true"
+    networks:
+      - edge
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # 备份：复用 postgres 镜像（pg_dump 版本与服务端严格一致），
+  # 循环执行 backup/backup.sh（默认每日，保留 7 天）。
+  # 完整策略（异地副本、告警、演练）由 TASK-REL-002 扩展。
+  # ---------------------------------------------------------------------------
+  backup:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/backup/loop.sh"]
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB 未设置（复制 deploy/.env.example 为 .env 后填写）}
+      PGUSER: ${POSTGRES_USER:?POSTGRES_USER 未设置（复制 deploy/.env.example 为 .env 后填写）}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未设置（禁止提交真实密码）}
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    volumes:
+      - backups:/backups
+      - ./backup:/backup:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # 迁移由 api 入口执行；等 api 健康后再备份，避免首轮把“空 schema”当成有效存档
+      api:
+        condition: service_healthy
+    healthcheck:
+      # 备份目录必须可写；备份失败由 backup.sh 非 0 退出 + 日志（alerting 见 REL-003）
+      test: ["CMD-SHELL", "test -w /backups"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - "no-new-privileges:true"
+    networks:
+      - data
+    logging: *default-logging
+
+volumes:
+  pgdata:
+    driver: local
+  backups:
+    driver: local
+
+networks:
+  edge:
+    driver: bridge
+  data:
+    driver: bridge
+    # 数据库与备份不需要出网；api 仍可通过 edge 出网（如将来接入外部服务）
+    internal: true

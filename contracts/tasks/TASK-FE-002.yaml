@@ -1,0 +1,46 @@
+task_id: TASK-FE-002
+title: 题库管理页（列表/筛选/新建/编辑/导入/删除）
+wbs_ref: T2.3
+owner_role: frontend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-FE-000, TASK-BE-002]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1questions"
+  - "contracts/openapi.yaml#/paths/~1questions~1{question_id}"
+  - "contracts/openapi.yaml#/paths/~1questions/import"
+
+write_scope:
+  - web/src/pages/questions/**
+  - web/tests/questions.test.tsx
+  - web/src/components/AppLayout.tsx（仅新增导航菜单入口，不改布局结构）
+read_scope:
+  - contracts/openapi.yaml
+  - docs/12-permission-matrix.md
+  - web/src/api/**
+
+must:
+  - 列表：分页、keyword/type/tag 筛选、难度与题型标签、操作列（编辑/删除）
+  - 新建/编辑弹窗：题型切换时约束选项与答案（单选 1 个答案、多选 ≥2、判断固定 A/B）；前端校验 + 后端错误回显
+  - 批量导入：上传 Excel/CSV，展示 imported/failed[{row,reason}] 结果表
+  - 删除二次确认；409 QUESTION_IN_USE 提示「题目已被试卷引用」
+  - TanStack Query 缓存与失效（创建/编辑/删除后刷新列表）
+  - data-testid：questions-create-answer-text、questions-import-file、questions-row-{id}
+
+acceptance:
+  - "组件测试：表单校验、导入结果渲染、删除确认、错误码提示"
+  - "pnpm lint / tsc --noEmit / build 通过"
+  - "所有字段与契约 schema 对齐"
+
+forbidden:
+  - 修改 api/client.ts、contracts/**、server/**
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pnpm test -- questions && pnpm lint && pnpm tsc --noEmit", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-FE-003 组卷页"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

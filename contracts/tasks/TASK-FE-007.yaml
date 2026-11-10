@@ -1,0 +1,46 @@
+task_id: TASK-FE-007
+title: 考试管理页（教师：创建/发布/关闭考试，查看状态）
+wbs_ref: T2.x（E2E 前置缺口）
+owner_role: frontend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-FE-000, TASK-BE-004, TASK-FE-003]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1exams"
+  - "contracts/openapi.yaml#/paths/~1exams~1{exam_id}"
+  - "contracts/openapi.yaml#/components/schemas/Exam"
+
+write_scope:
+  - web/src/pages/teacher/exams/**
+  - web/tests/exams.test.tsx
+  - web/src/routes.tsx（仅把 /exams 占位替换为真实页面）
+read_scope:
+  - contracts/openapi.yaml
+  - docs/00-prd.md（AC-11）
+  - docs/12-permission-matrix.md
+  - web/src/pages/papers/**
+
+must:
+  - 列表：GET /exams（status 筛选、分页），列 标题/试卷/时间窗/时长/状态/创建时间
+  - 创建：选择自己的试卷（frozen 才可发布）、标题、start_at/end_at、duration_min、乱序开关、publish 勾选
+  - 状态操作：发布（draft→published）、关闭（published→closed）；非法迁移 409 文案回显
+  - 归属校验错误（403）与字段校验（422）回显
+  - data-testid：exams-create、exams-publish-{id}、exams-close-{id}、exams-row-{id}
+
+acceptance:
+  - "组件测试：列表渲染、创建校验、发布/关闭状态流转、409/422 提示"
+  - "pnpm lint / tsc --noEmit / build 通过"
+  - "E2E T-E2E-01 可通过 UI 完成发布考试"
+
+forbidden:
+  - 修改 contracts/**、server/**、web/src/api/client.ts
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pnpm test -- exams && pnpm lint && pnpm tsc --noEmit", passed: 0, failed: 0 }
+  open_questions: []
+  next: "TASK-QA-001 E2E 可用 UI 完成 教师发布考试 步骤"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 20 }

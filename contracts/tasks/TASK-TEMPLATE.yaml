@@ -1,0 +1,51 @@
+# ============================================================================
+# TASK CARD 模板（R2 Architect 维护，R0 Lead 派发时填写）
+# 每个 WBS 节点一张卡；Worker 只读本卡 + 契约 + 现有代码，不做范围外改动
+# ============================================================================
+task_id: TASK-XXX-000                 # 命名：TASK-{BE|FE|QA|REL}-{序号}
+title: 一句话描述
+wbs_ref: T1.1                         # 对应 docs/ 中 WBS 编号
+owner_role: backend-impl              # 对应 presets/agent-presets.yaml 的 preset 名
+context: spawn                        # spawn（强制）| fork（仅 PM/Architect 例外）
+model_tier: balanced                  # strong | balanced | light
+
+depends_on: []                        # 依赖的 task_id；未完成不得开工
+contract_refs:                        # 本任务只允许消费这些契约片段
+  - "contracts/openapi.yaml#/paths/~1xxx"
+
+write_scope:                          # 允许写入的路径（越界即失败）
+  - server/app/xxx/**
+  - server/tests/xxx/**
+read_scope:                           # 允许读取的路径（默认只读）
+  - contracts/openapi.yaml
+  - docs/00-prd.md
+  - docs/11-data-model.md
+  - server/app/**
+
+must:                                 # 必须实现的行为（逐条可验证）
+  - ...
+
+acceptance:                           # DoD：全部满足才算 done
+  - "pytest 通过：<命令>"
+  - "契约测试通过：<命令>"
+  - "ruff/mypy 通过：<命令>"
+  - "diff 未越出 write_scope"
+
+forbidden:
+  - 修改 contracts/** 或 docs/**（契约问题返回 contract_issue，不得自行修）
+  - 修改其他角色的 write_scope
+  - 自行派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: ["路径数组"]
+  tests:
+    cmd: "执行的验证命令"
+    passed: 0
+    failed: 0
+  open_questions: ["阻塞问题"]
+  next: "建议的下一步"
+
+circuit_breaker:
+  max_tool_calls: 40
+  timeout_min: 15

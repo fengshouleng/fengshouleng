@@ -1,0 +1,45 @@
+task_id: TASK-BE-008
+title: 结构化访问日志中间件（JSON 行：request_id/method/path/status/latency_ms/actor_id）
+wbs_ref: T4.4（REL-003 慢请求统计的前置）
+owner_role: backend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-000, TASK-BE-001]
+contract_refs:
+  - "contracts/openapi.yaml#/components/schemas/Error"
+
+write_scope:
+  - server/app/middleware/**
+  - server/app/main.py（仅注册中间件）
+  - server/tests/middleware/**
+read_scope:
+  - server/app/settings.py
+  - server/app/auth/dependencies.py
+  - server/app/audit/service.py
+  - docs/72-monitoring.md
+
+must:
+  - ASGI 中间件：为每个请求输出一行 JSON（request_id、method、path（不含 query）、status、latency_ms、actor_id（未登录 null）、user_agent（截断 120））
+  - 不记录请求体、不记录 Cookie/Authorization、不记录密码与答案
+  - 与既有 request_id 中间件复用同一个 id（不重复生成）
+  - 日志写 stdout（容器 json-file 采集），格式可被 `deploy/monitoring/slow_requests.sh` 解析
+  - 测试：成功请求/4xx/5xx 各产生一行、字段完整、latency 数值、未登录 actor_id=null、敏感字段不出现
+
+acceptance:
+  - "pytest -q server/tests/middleware 通过"
+  - "日志行可被 docs/72 §5.2 的解析示例正确处理"
+  - "diff 未越界"
+
+forbidden:
+  - 修改 contracts/**、docs/**、web/**
+  - 记录请求体或敏感头
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pytest -q server/tests/middleware", passed: 0, failed: 0 }
+  open_questions: []
+  next: "REL-003 慢请求日报可切到真实日志格式"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 20 }

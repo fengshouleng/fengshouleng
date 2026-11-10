@@ -1,0 +1,43 @@
+task_id: TASK-REL-002
+title: 备份、恢复演练与保留策略
+wbs_ref: T4.3
+owner_role: release-sre
+context: spawn
+model_tier: balanced
+depends_on: [TASK-REL-001]
+contract_refs: []
+
+write_scope:
+  - deploy/backup/**
+  - deploy/cron/**
+  - docs/71-backup-restore.md
+read_scope:
+  - docs/10-arch.md
+  - deploy/docker-compose.yml
+  - docs/70-runbook.md
+
+must:
+  - backup 服务：每日 02:00 `pg_dump -Fc` 到独立命名卷，文件名含日期；保留 7 份日备 + 4 份周备，自动清理旧文件
+  - 备份完整性校验：备份完成后 `pg_restore --list` 校验文件可读，失败即告警（写日志 + 退出码非 0）
+  - restore 脚本：支持「恢复到临时库并比对关键表行数」，不覆盖生产库除非显式 --force
+  - docs/71-backup-restore.md：备份策略、恢复步骤、演练记录模板（时间/备份点/恢复耗时/行数比对/结论）
+  - 演练一次并留证据（恢复 < 30 分钟为 G4 准入条件）
+
+acceptance:
+  - "备份脚本可重复执行，失败时退出码非 0 且日志清晰"
+  - "恢复演练记录完整：备份点、耗时、数据比对、结论"
+  - "恢复流程在另一台干净环境可复现（不依赖开发机状态）"
+
+forbidden:
+  - 修改 server/**、web/**、contracts/**
+  - 对生产库执行恢复（演练在临时库/独立环境）
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "bash deploy/backup/backup.sh && bash deploy/backup/restore_drill.sh", passed: 0, failed: 0, verified: false }
+  open_questions: []
+  next: "G4 证据：备份恢复演练通过"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 25 }

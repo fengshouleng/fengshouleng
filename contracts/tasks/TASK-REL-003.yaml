@@ -1,0 +1,43 @@
+task_id: TASK-REL-003
+title: 监控、日志与告警（轻量方案，不引入 Prometheus 集群）
+wbs_ref: T4.4
+owner_role: release-sre
+context: spawn
+model_tier: balanced
+depends_on: [TASK-REL-001]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1healthz"
+
+write_scope:
+  - deploy/monitoring/**
+  - docs/72-monitoring.md
+read_scope:
+  - docs/10-arch.md
+  - docs/70-runbook.md
+  - deploy/docker-compose.yml
+
+must:
+  - 日志：api 输出 JSON 行日志（含 request_id、method、path、status、latency_ms、actor_id），docker json-file 轮转（max-size/max-file）
+  - 健康探测：cron 每 1 分钟 curl /api/healthz，连续 3 次失败写告警日志（告警通道先落文件 + 可插 webhook 环境变量）
+  - 资源与备份告警：磁盘使用率 > 85%、备份文件缺失/超过 26h 未更新 → 告警
+  - 慢请求识别：access 日志中 latency_ms > 1000 的记录单独汇总（每日脚本）
+  - docs/72-monitoring.md：指标清单、告警阈值、排障入口（日志位置/查询示例）、告警升级路径
+
+acceptance:
+  - "告警脚本在 staging 可手动触发并留下记录"
+  - "文档可让非作者按步骤定位一次故障"
+  - "不引入重依赖（无 Prometheus/Grafana 集群）"
+
+forbidden:
+  - 修改 server/**、web/**、contracts/**
+  - 在日志中输出密码/令牌/用户答案
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "bash deploy/monitoring/smoke_alert.sh", passed: 0, failed: 0, verified: false }
+  open_questions: []
+  next: "TASK-REL-004 上线与回滚"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 20 }

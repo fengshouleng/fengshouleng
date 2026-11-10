@@ -1,0 +1,49 @@
+task_id: TASK-BE-007
+title: 种子数据与运维 CLI + /healthz DB 探针
+wbs_ref: T1.1 + T4.4（运维缺口 GAP-01/02/07）
+owner_role: backend-impl
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-001]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1healthz"
+  - "contracts/openapi.yaml#/components/schemas/Error"
+
+write_scope:
+  - server/app/cli.py
+  - server/app/api/health.py
+  - server/tests/cli/**
+  - server/tests/api/test_health_db.py
+read_scope:
+  - server/app/auth/**
+  - server/app/users/**
+  - server/app/db.py
+  - server/app/models/**
+  - docs/70-runbook.md
+
+must:
+  - CLI `python -m app.cli create-admin --username X --display-name Y`（密码从 stdin 或 --password-env 读取，禁止命令行明文参数）
+  - CLI `python -m app.cli seed-demo`：1 教师 + 2 学生 + 3 题（单选/多选/判断各 1）+ 1 份合计 100 分试卷；仅在空库执行，重复执行幂等
+  - CLI `python -m app.cli check`：迁移版本、DB 连通、管理员数量自检
+  - `/healthz`：执行 `SELECT 1` 探活；DB 不可用返回 503 + 统一错误体（code=INTERNAL_ERROR 或 SERVICE_UNAVAILABLE）；正常返回 {status:"ok",version,db:"ok"}
+  - 契约 503 语义在 docs/70-runbook.md 的探针说明中保持一致（runbook 由 R6 维护，如需修改写 open_questions）
+  - 测试：CLI 建号后可用密码登录；种子幂等；DB 断开时 /healthz 返回 503（用 monkeypatch 模拟）
+
+acceptance:
+  - "pytest -q server/tests/cli server/tests/api 通过"
+  - "create-admin 后 GET /auth/me 可登录（集成用例）"
+  - "healthz DB 故障返回 503 且响应体为统一错误格式"
+
+forbidden:
+  - 修改 contracts/**、docs/**、web/**
+  - 在日志/命令行输出明文密码
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pytest -q server/tests/cli server/tests/api", passed: 0, failed: 0 }
+  open_questions: []
+  next: "解除 runbook GAP-01/02/07；E2E 可用 seed-demo"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 20 }

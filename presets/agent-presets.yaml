@@ -1,0 +1,144 @@
+# ============================================================================
+# DSH Agent 角色预设（R0–R6）
+# 说明：字段名为示意，落地时映射到团队 DSH 版本的 agentPreset / toolFilter 配置。
+# 两层权限：
+#   1) toolFilter（本文件）= 提示层，约束 Agent 可用工具与写作用域；
+#   2) DSH 文件沙箱（workspace-write）+ 审批策略（ask）= 强制层。
+# 两层叠加才构成「最小权限」；toolFilter 不能替代沙箱。
+# 铁律：Worker 一律 deny subagent / subagent_fork / spawn_teammate / workflow，
+#       防止递归派活与上下文链式污染；只有 R0 拥有派活能力。
+# ============================================================================
+version: 1
+
+presets:
+
+  # ---------------- R0 治理层 ----------------
+  lead-router:
+    description: 唯一派活者；管契约版本、门控、决策日志、并发与成本
+    model_tier: balanced          # 仲裁/门控时可临时升到 strong
+    context: main                 # 常驻主会话，不重开
+    model_override: { gate_review: strong }
+    tools:
+      allow: [read, glob, grep, write, edit, pwsh,
+              subagent, subagent_fork, workflow,
+              send_message, team_task_list, team_task_get, team_task_create, team_task_update,
+              wait_agent, list_agents, interrupt_agent,
+              ask_user_question, present]
+      write_roots: [docs/decision-log.md, docs/01-scope-freeze.md, docs/02-risk.md,
+                    contracts/tasks/, README.md]
+      pwsh_allow: ["git status", "git diff", "git log", "pytest", "pnpm", "openapi"]
+      deny: [game_*, schedule_*]
+    guardrails:
+      - 不写 server/** 与 web/**（业务代码只由 Worker 写）
+      - 不写 contracts/openapi.yaml（契约只由 architect 改）
+      - 派发前必须写任务卡；合并前必须跑 diff 越界检查与测试
+
+  # ---------------- R1 PM-Spec ----------------
+  pm-spec:
+    description: 需求收敛、AC 编写、范围冻结
+    model_tier: balanced
+    context: fork                 # 继承 Lead 与用户的澄清对话；任务一次完成
+    tools:
+      allow: [read, glob, grep, write]
+      write_roots: [docs/00-prd.md, docs/01-scope-freeze.md, docs/02-risk.md]
+      deny: [pwsh, web_fetch, web_search, subagent, subagent_fork,
+             spawn_teammate, workflow, present, game_*, schedule_*]
+    return_schema:
+      status: [done, blocked]
+      files: [string]
+      ac_count: int
+      open_questions: [string]
+
+  # ---------------- R2 Architect ----------------
+  architect:
+    description: 架构 ADR、数据模型、OpenAPI 契约、权限矩阵；唯一契约所有者
+    model_tier: strong
+    context: fork                 # 继承 PRD 与历史 ADR，契约变更时复用同一会话
+    tools:
+      allow: [read, glob, grep, write, edit, pwsh]
+      write_roots: [contracts/**, docs/10-arch.md, docs/11-data-model.md,
+                    docs/12-permission-matrix.md, contracts/tasks/]
+      pwsh_allow: ["openapi", "npx openapi-typescript", "python -m json.tool"]
+      deny: [web_fetch, web_search, subagent, subagent_fork, spawn_teammate,
+             workflow, ask_user_question, game_*, schedule_*, present]
+    guardrails:
+      - 契约变更必须出 ADR（含 rollback），并通知 R0 广播
+      - 不写 server/** 与 web/**
+
+  # ---------------- R3 Backend ----------------
+  backend-impl:
+    description: 后端模块实现、迁移、单测
+    model_tier: balanced          # 判分/幂等/并发类任务卡可标 strong
+    context: spawn                # 干净上下文，只吃任务卡 + 契约
+    tools:
+      allow: [read, glob, grep, write, edit, pwsh]
+      write_roots: [server/app/**, server/tests/**, server/migrations/**, server/pyproject.toml]
+      pwsh_allow: ["pytest", "ruff", "mypy", "alembic", "uvicorn", "git status", "git diff"]
+      deny: [web_fetch, web_search, subagent, subagent_fork, spawn_teammate,
+             workflow, ask_user_question, present, game_*, schedule_*]
+      read_deny: ["web/**"]
+    return_schema:
+      status: [done, blocked, contract_issue]
+      files: [string]
+      tests: { cmd: string, passed: int, failed: int }
+      open_questions: [string]
+    circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }
+
+  # ---------------- R4 Frontend ----------------
+  frontend-impl:
+    description: 前端页面、状态、请求层、组件测试
+    model_tier: balanced
+    context: spawn
+    tools:
+      allow: [read, glob, grep, write, edit, pwsh]
+      write_roots: [web/src/**, web/tests/**, web/package.json, web/vite.config.ts]
+      pwsh_allow: ["pnpm", "npm", "npx", "git status", "git diff"]
+      deny: [web_fetch, web_search, subagent, subagent_fork, spawn_teammate,
+             workflow, ask_user_question, present, game_*, schedule_*]
+      read_deny: ["server/**"]
+    return_schema:
+      status: [done, blocked, contract_issue]
+      files: [string]
+      tests: { cmd: string, passed: int, failed: int }
+      open_questions: [string]
+    circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }
+
+  # ---------------- R5 QA ----------------
+  qa-verify:
+    description: 独立验证：契约测试、E2E、权限负例、安全基线、性能冒烟、放行结论
+    model_tier: balanced          # 安全/并发专项可升 strong
+    model_override: { security_suite: strong }
+    context: spawn                # 对抗性独立：不复用开发会话
+    tools:
+      allow: [read, glob, grep, write, edit, pwsh]
+      write_roots: [tests/**, docs/60-test-plan.md, docs/61-gate-report.md, reports/**]
+      pwsh_allow: ["pytest", "playwright", "pnpm", "docker compose", "docker logs", "git diff"]
+      deny: [web_fetch, web_search, subagent, subagent_fork, spawn_teammate,
+             workflow, ask_user_question, present, game_*, schedule_*]
+      write_deny: ["server/**", "web/**", "contracts/**"]
+    guardrails:
+      - 只报不修；缺陷单固定字段（AC、复现、期望/实际、严重度、证据路径）
+      - 发布门报告必须有命令与输出证据，不允许“口头通过”
+
+  # ---------------- R6 Release ----------------
+  release-sre:
+    description: CI/CD、Compose 部署、备份恢复、监控告警、上线与回滚 runbook
+    model_tier: balanced
+    context: spawn
+    tools:
+      allow: [read, glob, grep, write, edit, pwsh]
+      write_roots: [deploy/**, .github/workflows/**, docs/70-runbook.md,
+                    docs/71-backup-restore.md]
+      pwsh_allow: ["docker", "docker compose", "git", "pg_dump", "psql", "curl"]
+      deny: [web_fetch, web_search, subagent, subagent_fork, spawn_teammate,
+             workflow, ask_user_question, present, game_*, schedule_*]
+      write_deny: ["server/**", "web/**", "contracts/**"]
+    guardrails:
+      - 生产变更必须人工审批（DSH approval policy = ask），禁止自批自执行
+      - 先 staging 演练并留证据，再动生产；回滚脚本必须先演练
+
+# ---------------------------------------------------------------------------
+# 降级方案：若 2 周过紧，合并为 4 个角色
+#   R0 兼 PM-Spec（加 docs 写权限）；R2 兼 Release（加 deploy 写权限）；
+#   保留 R3 / R4 / R5。QA 永远独立，不合并不裁撤。
+# ---------------------------------------------------------------------------

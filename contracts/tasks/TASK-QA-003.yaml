@@ -1,0 +1,44 @@
+task_id: TASK-QA-003
+title: 性能冒烟（100 并发作答，P95 阈值门）
+wbs_ref: T3.4
+owner_role: qa-verify
+context: spawn
+model_tier: balanced
+depends_on: [TASK-BE-004]
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1sessions~1{session_id}~1answers"
+  - "contracts/openapi.yaml#/paths/~1sessions~1{session_id}"
+
+write_scope:
+  - tests/perf/**
+  - reports/**
+read_scope:
+  - docs/00-prd.md
+  - contracts/openapi.yaml
+  - docs/70-runbook.md
+
+must:
+  - 压测脚本（k6 或 locust 二选一，优先 k6）：100 并发虚拟用户，场景=开始考试→随机答题→每 30s 保存→交卷
+  - 阈值：保存/读取接口 P95 < 300ms、错误率 < 0.1%、SQLite→PostgreSQL 两种环境分别跑（至少 PostgreSQL）
+  - 数据准备：1 教师 + 100 学生 + 100 题试卷 1 份；脚本可一键重建
+  - 输出报告：吞吐、P50/P95/P99、错误分布、瓶颈定位（慢查询/锁等待），写入 reports/perf/{timestamp}/
+  - 结论明确：达标/不达标 + 不达标的优化建议（不直接改代码）
+
+acceptance:
+  - "压测脚本可复现（README 记录环境与命令）"
+  - "报告含阈值对比与瓶颈证据"
+  - "不修改被测系统代码"
+
+forbidden:
+  - 修改 server/**、web/**、contracts/**
+  - 在共享 staging 上直接压满（需申请独立环境/时段）
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "k6 run tests/perf/exam_flow.js", passed: 0, failed: 0 }
+  open_questions: []
+  next: "G4 发布候选证据"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 30 }

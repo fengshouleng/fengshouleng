@@ -1,0 +1,48 @@
+task_id: TASK-BE-000
+title: 后端脚手架与质量门（应用工厂/配置/错误模型/健康检查/pytest/ruff/mypy）
+wbs_ref: T0.4
+owner_role: backend-impl
+context: spawn
+model_tier: balanced
+depends_on: []
+contract_refs:
+  - "contracts/openapi.yaml#/paths/~1healthz"
+  - "contracts/openapi.yaml#/components/schemas/Error"
+
+write_scope:
+  - server/**
+read_scope:
+  - contracts/openapi.yaml
+  - docs/10-arch.md
+  - docs/11-data-model.md
+  - docs/12-permission-matrix.md
+
+must:
+  - server/pyproject.toml：fastapi、uvicorn、sqlalchemy>=2、alembic、pydantic-settings、argon2-cffi、pytest、httpx、ruff、mypy
+  - app/main.py：create_app() 工厂 + request_id 中间件 + 统一异常处理（输出 {code,message,request_id}）
+  - app/settings.py：从环境变量读取 DATABASE_URL/APP_ENV/SESSION_TTL
+  - app/db.py：SQLAlchemy engine/session 依赖
+  - GET /healthz 返回 {status:"ok",version}，不需要认证
+  - alembic init + 空基线迁移（不建业务表）
+  - tests/conftest.py：TestClient fixture + 临时 SQLite fixture
+
+acceptance:
+  - "pytest -q 通过（至少 healthz 用例）"
+  - "ruff check server 通过"
+  - "mypy server 通过"
+  - "uvicorn app.main:app 可启动，curl /api/healthz 返回 200"
+  - "diff 未越出 server/"
+
+forbidden:
+  - 建业务表、写业务逻辑（留给 TASK-BE-001 起）
+  - 修改 contracts/** 或 docs/**
+  - 派生 subagent
+
+return_schema:
+  status: "done | blocked | contract_issue"
+  files: []
+  tests: { cmd: "pytest -q server && ruff check server && mypy server", passed: 0, failed: 0 }
+  open_questions: []
+  next: "可派发 TASK-BE-001 / TASK-BE-002"
+
+circuit_breaker: { max_tool_calls: 40, timeout_min: 15 }

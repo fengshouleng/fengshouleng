@@ -1,0 +1,25 @@
+# 统一换行：容器/CI（Linux）里执行的文件必须是 LF；
+# Windows 本地脚本（.ps1/.cmd）保留 CRLF，避免双击与 PS 5.1 解析问题。
+* text=auto
+
+*.sh        text eol=lf
+*.py        text eol=lf
+*.js        text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.md        text eol=lf
+*.json      text eol=lf
+*.ini       text eol=lf
+Dockerfile* text eol=lf
+*.bak       text eol=lf
+
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+*.png       binary
+*.jpg       binary
+*.dump      binary
+*.zip       binary
