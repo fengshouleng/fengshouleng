@@ -59,9 +59,12 @@ echo "== [3/6] 当前用户（Cookie 生效）=="
 curl -fsS -b "$COOKIE" "${BASE}/api/auth/me" | jq -c '{username: .user.username, role: .user.role}'
 
 echo "== [4/6] 建题（写接口需 X-CSRF-Token）=="
+# 题干带唯一后缀：冒烟可在同一 staging 反复执行（历史冒烟题已软删，但题库对
+# (owner, 题干) 有唯一性约束，固定题干会让第二次冒烟拿到 409）。
+SMOKE_TAG="${SMOKE_TAG:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 Q_JSON="$(curl -fsS -b "$COOKIE" -X POST "${BASE}/api/questions" \
-  -H 'Content-Type: application/json' -H "X-CSRF-Token: ${CSRF}" --data @- <<'JSON'
-{"type":"single","stem":"REL-001 冒烟题：1+1=?","options":[{"key":"A","text":"2"},{"key":"B","text":"3"}],"answer":["A"],"explanation":"基础算术","difficulty":1,"tags":["smoke"]}
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: ${CSRF}" --data @- <<JSON
+{"type":"single","stem":"REL-001 冒烟题：1+1=? [${SMOKE_TAG}]","options":[{"key":"A","text":"2"},{"key":"B","text":"3"}],"answer":["A"],"explanation":"基础算术","difficulty":1,"tags":["smoke"]}
 JSON
 )"
 printf '%s' "$Q_JSON" | jq -c '{id, type, stem}'

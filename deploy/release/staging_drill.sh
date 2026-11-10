@@ -293,7 +293,10 @@ cleanup_rollback_cmd() {
 # ---------------------------------------------------------------------------
 finalize() {
     local _requested="$1" _note="${2:-}"
-    local _i _all="PASS" _result="PASS" _total _rb_secs=0 _within="false"
+    # 默认 FAIL：只有「调用方要求 PASS + 所有步骤 PASS + 回滚在时限内」才判 PASS。
+    # 修复记录（2026-11-10）：原先初始值是 PASS 且缺 else 分支，导致 smoke 失败时
+    # JSON/终端仍打印 result=PASS（G4 证据容易被误读为通过）。
+    local _i _all="PASS" _result="FAIL" _total _rb_secs=0 _rb_seen="0" _within="false"
     local _deploy_s _smoke_s _first=1
 
     if [ "$FINALIZED" = "1" ]; then
@@ -308,11 +311,13 @@ finalize() {
                 _all="FAIL"
             fi
             if [ "${STEP_NAMES[$_i]}" = "rollback" ]; then
+                _rb_seen="1"
                 _rb_secs="${STEP_SECONDS[$_i]}"
             fi
         done
     fi
-    if [ "$_rb_secs" -gt 0 ] && [ "$_rb_secs" -le "$ROLLBACK_LIMIT" ]; then
+    # 回滚只要执行过且不超过时限即视为达标（秒级回滚是好事，不应因 _rb_secs=0 判失败）
+    if [ "$_rb_seen" = "1" ] && [ "$_rb_secs" -le "$ROLLBACK_LIMIT" ]; then
         _within="true"
     fi
     if [ "$_requested" = "PASS" ] && [ "$_all" = "PASS" ] && [ "$_within" = "true" ]; then

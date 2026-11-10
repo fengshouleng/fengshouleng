@@ -137,3 +137,11 @@
   - **边界**：Docker Desktop 的 VM 磁盘仍是 Windows NTFS 上的 VHDX，因此容器也不代表真实 Linux SSD；本机（原生 + 容器）都复现同一写尾，**不能在本机销项**。
   - **销项路径（已具备）**：CI 手动 `perf` job（compose 起 postgres+api、造数、k6 阈值判定、artifact）→ 推送到 GitHub 后 Actions 手动 Run 一次，真实 ubuntu/SSD 上应通过。
   - **G4 状态不变**（CONDITIONAL）：剩余 = Linux/SSD 的 perf 销项 + staging 部署回滚演练 + CI 三 job 首跑。
+- 2026-11-10（13:28，staging 部署→回滚演练 **PASS**，G4 演练项销项）：
+  - **环境**：Docker 29.9.3 + Git bash 5.3 + jq 1.7.1（Windows；执行时需 `MSYS2_ARG_CONV_EXCL="/bin/sh;/backup"` 防止 MSYS 路径转换破坏 `docker compose exec`）。
+  - **演练结果**（`reports/release-drill-20261110T052821Z.json`）：`deploy` **17s** PASS → `smoke_after_deploy` **1s** PASS → `rollback` **11s** PASS（≤900s）→ `smoke_after_rollback` **1s** PASS，总 **31s**，`result=PASS`，G4 编号 `G4-20261110-1300`。
+  - **过程中发现并修复 2 个脚本缺陷**（否则证据会失真）：
+    1. `DEF-002`：`staging_drill.sh` 的 `finalize()` 初始 `_result=PASS` 且缺 FAIL 分支 → smoke 失败时 JSON/终端仍打印 `result=PASS`；已改为默认 FAIL，并把「回滚 0s 判失败」改为「执行过且 ≤ 时限」。
+    2. `DEF-003`：`smoke.sh` 题干固定，第二次执行触发题库唯一约束 409 → 冒烟不可重复；已加 `[时间戳-pid]` 唯一后缀。
+  - **本地执行顺序**（可复现）：预置 staging 管理员（新库必须 `create-admin`）→ `staging_drill.sh --env staging --env-file deploy/.env.staging --project exam-staging --base-url http://127.0.0.1:8080`。
+  - **G4 状态**：演练项 ✅ 销项；剩余 = **真实 Linux/SSD 的 perf 销项** + **CI 三 job 首跑**，均需 GitHub 远端推送后由 Actions 触发。

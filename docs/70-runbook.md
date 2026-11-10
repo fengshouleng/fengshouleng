@@ -515,6 +515,19 @@ rc=$?; echo "drill exit=$rc"
 不满足时**不得**把演练数据填进 G4 报告；先按日志修问题再重跑（重跑会生成新 JSON，旧 JSON 保留作对比）。
 只允许 `--env staging`：production 演练就是真实故障，必须走 `docs/74` 的人工流程。
 
+**Windows（Git bash）执行注意**（2026-11-10 本机实测）：
+
+```bash
+export MSYS2_ARG_CONV_EXCL="/bin/sh;/backup"   # 否则容器 exec 的 /bin/sh 会被转成 C:/Program Files/Git/usr/bin/sh
+# 需要 jq 1.7+（Git bash 不自带）；可下载 jq-windows-amd64.exe 放入 PATH
+# 全新 staging 库必须先建管理员，否则两次冒烟都会 401：
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env.staging -p exam-staging exec -T \
+  -e EXAM_ADMIN_PASSWORD="$ADMIN_PASSWORD" api \
+  python -m app.cli create-admin --username "$ADMIN_USER" --display-name "演练管理员" --password-env EXAM_ADMIN_PASSWORD
+```
+
+演练会真实执行 `deploy.sh` → 冒烟 → `rollback.sh` → 冒烟；`finalize()` 只在这四步全 PASS 且回滚 ≤900s 时写 `result=PASS`（`DEF-002` 已修）。
+
 说明：演练验证“镜像回滚 + 健康 + 冒烟 + 15 分钟”，**不验证迁移降级**（降级演练需要两个含迁移的版本，见 §14.4 选项 B；当前 V1 默认不允许降级）。
 演练结束后 staging 会停在“回滚后的旧镜像”上（这是演练的预期终态）；要验证新代码，随后单独执行 `bash deploy/release/deploy.sh --env staging`。
 

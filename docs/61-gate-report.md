@@ -61,7 +61,10 @@ docker compose version     #
 
 | 缺陷 ID | 关联 AC | 严重级 | 标题 | 状态 | 复现/证据 | 负责人 |
 |---|---|---|---|---|---|---|
-| `DEF-001` | AC-__ | `P0/P1/P2` |  | `open/fixed/wontfix` |  |  |
+| `DEF-001` | G4/性能 | `P1` | 单 worker 部署容量不足 + 日志锁遇慢 stdout 放大（PERF-001） | `fixed`（配置层，Linux 销项待 CI） | `docs/61 §10.2`；`reports/perf/*` | R0/R6 |
+| `DEF-002` | G4/发布 | `P1` | `staging_drill.sh` 失败时 JSON/终端仍打印 `result=PASS`（finalize 缺 FAIL 分支 + 回滚 0s 判失败） | `fixed` | 2026-11-10 演练日志 `reports/release/20261110-1300/staging-drill3.log`；修复 `deploy/release/staging_drill.sh` | R0 |
+| `DEF-003` | G4/发布 | `P2` | `smoke.sh` 冒烟题干固定，二次执行因题库唯一约束返回 409，破坏演练可重复性 | `fixed` | `reports/release/20261110-1300/staging-drill4.log`（step 4/6 409）；修复为带时间戳后缀 | R0 |
+| `DEF-004` | 环境 | `P2` | Windows Git-bash 下 `/bin/sh`、`/backup/*.sh` 参数被 MSYS 路径转换，容器 `exec` 报 `C:/Program Files/Git/usr/bin/sh` 不存在 | `fixed`（运行约定） | `reports/release/20261110-1300/staging-drill.log`；执行时设 `MSYS2_ARG_CONV_EXCL="/bin/sh;/backup"`（已写入 `docs/70 §14.2`） | R0 |
 
 **放行规则**：P0/P1 缺陷数必须为 0；P2 允许存在但需写明规避方案与修复版本。
 
@@ -116,11 +119,11 @@ docker compose version     #
 
 | 项 | 值 |
 |---|---|
-| 回滚 commit | `__________`（本次发布前的最后一个 G4 通过版本） |
-| 回滚方式 | `docs/70-runbook.md` §回滚（镜像 tag 回退 + Alembic `downgrade` + 健康检查） |
-| 数据兼容 | 本次是否含破坏性迁移：`是/否`；若是，回滚是否需要恢复备份：`是/否` |
-| 回滚实测耗时 | `____ min`（判据 < 15min） |
-| 回滚后冒烟 | `GET /healthz` → 200；教师登录 → 200；学生答题 → 200 |
+| 回滚 commit | `fdb3a64`（演练时工作区 HEAD；演练镜像 tag `drill-20261110T052626Z-base`） |
+| 回滚方式 | `docs/70-runbook.md` §14.4：镜像 tag 回退 + 健康检查 + 冒烟（本次演练无 SQL 迁移，`db_action=none`，DB 版本 0006→0006） |
+| 数据兼容 | 本次是否含破坏性迁移：**否**；回滚不需要恢复备份（演练 `db_action=none`） |
+| 回滚实测耗时 | **11s** ≈ **0.2 min**（判据 < 15min ✅；来源 `reports/release-drill-20261110T052821Z.json`） |
+| 回滚后冒烟 | ✅ 六步冒烟（healthz / 登录 / me / 建题 / 回读 / 软删）全过；`smoke_after_rollback result=PASS` |
 
 ## 7. 签字
 
@@ -193,15 +196,16 @@ docker compose version     #
 | 恢复演练 | ✅ **PASS**：restore 0s（<1800s）；行数 users 4/4、questions 3/3、papers 1/1、exams 0/0、exam_sessions 0/0；临时库已删 | `reports/drill-backups/drill-logs/backup-20261109.log` |
 | compose config | ✅ exit 0（`--env-file deploy/.env.example`） | 本次执行 |
 | 性能冒烟（k6 100 写 + 100 读 VU / 3m） | ⚠️ **原生 PG 6 组 + 容器内 1 组实测完成**：容器（8 worker、fsync=on、k6 in-container）read p95 **14.2ms ✅**、保存 p95 **199.7ms ✅**、失败率 0.09% ✅，仅开场 burst `answer_save` p95 **428ms ❌**；`sync=off` 诊断 252ms 证明为 WAL fsync 串行 → 需真实 Linux/SSD 销项（§10.2.7） | `reports/perf/native-*/summary.json`、`reports/perf/docker-container-*/summary.json`、`docs/75-perf-baseline.md` |
+| staging 部署→回滚演练 | ✅ **PASS**（2026-11-10 13:28 本机 Docker）：deploy **17s** → smoke **1s** → rollback **11s**（≤900s）→ smoke **1s**，总 **31s**，`steps` 四步全 PASS | `reports/release-drill-20261110T052821Z.json`、`deploy/evidence/release-drill-staging-20261110T052821Z.log` |
 
 **期间修复（测试缺陷，非实现缺陷）**：`test_audit_system_record_has_null_actor_and_dash_ip` 曾把 `auth.login_failed`（`actor_id=None` 但 ip 为真实地址）误当系统记录，导致偶发失败；已改为只筛 `action=user.create` 且 `actor_id=None` 的记录。
 
 **G4 仍缺（环境型，非代码问题）**：
 1. 性能最终确认（原生 PG + 容器内共 8 组实测已完成，容量与 fsync 归因清晰；**真实 Linux/SSD runner 上尚未跑**——本机原生 NTFS 与 Docker Desktop 的 VHDX 都落在 Windows NTFS，无法代表线上存储。CI 已备好手动 `perf` job，推送后 Run workflow 即可销项）；
-2. staging 部署→回滚演练（脚本为 bash + docker compose；本机已有 Docker + Git bash，正在构建 web/nginx 镜像后尝试本地演练，失败则转 CI/Linux runner）；
-3. CI 三 job 首跑（git 已装、仓库已初始化并提交 4 次，需推送到 GitHub 远端后观察）。
+2. ~~staging 部署→回滚演练~~ ✅ **已完成**（`reports/release-drill-20261110T052821Z.json`，四步 PASS、rollback 11s）；
+3. CI 三 job 首跑（git 已装、仓库已初始化并提交，需推送到 GitHub 远端后观察）。
 
-**结论**：功能、契约、安全、E2E、备份恢复、compose 配置均有真实运行证据；**性能已完成 8 组实测与修复（多 worker + 池摊分），读/保存达标，开场 burst 受宿主存储 flush 限制，需在真实 Linux/SSD 销项**；staging 部署回滚演练进行中。G4 = **CONDITIONAL（性能 Linux 销项 + staging 演练 + CI 首跑）**。
+**结论**：功能、契约、安全、E2E、备份恢复、compose 配置、**staging 部署回滚演练**均有真实运行证据；**性能已完成 8 组实测与修复（多 worker + 池摊分），读/保存达标，开场 burst 受宿主存储 flush 限制，需在真实 Linux/SSD 销项**。G4 = **CONDITIONAL（性能 Linux 销项 + CI 首跑）**。
 
 ### 10.2 PERF-001 性能缺陷记录（G4 阻断项）— 2026-11-10 原生 PG 复测与修复
 

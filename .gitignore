@@ -30,6 +30,7 @@ web/coverage/
 reports/
 deploy/evidence/*
 !deploy/evidence/README.md
+deploy/release/.state/
 .run/
 *.log
 
